@@ -1,0 +1,27 @@
+/* base */
+@bgApp: #f4f6f8;
+@bgPanel: #ffffff;
+@bgSubtle: #f8fafb;
+@bgHeader: #eef3f5;
+@bgHover: #f6fafb;
+@bgSelected: #e7f2f3;
+
+/* text */
+@textMain: #23313a;
+@textMuted: #667784;
+@textOnAccent: #ffffff;
+
+/* lines */
+@border: #d8e0e6;
+@borderStrong: #c7d1d8;
+@gridLine: #e9eef2;
+
+/* accent */
+@accent: #2f7c85;
+@accentHover: #276871;
+@accentSoft: #dbecee;
+
+/* danger */
+@danger: #b85c5c;
+@dangerSoft: #f6eaea;
+@dangerBorder: #ebcaca;
