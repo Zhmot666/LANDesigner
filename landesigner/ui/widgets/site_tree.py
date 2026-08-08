@@ -18,6 +18,12 @@ from PySide6.QtWidgets import (
 
 from landesigner.domain.entities import ProjectSnapshot
 
+# Цвета из Designer/Палитра.css
+_TEXT_MAIN = QColor("#23313a")
+_ACCENT = QColor("#2f7c85")
+_BG_SELECTED = QColor("#e7f2f3")
+_BG_BASE = QColor("#ffffff")
+
 
 class TreeKind(str, Enum):
     SITE = "site"
@@ -46,21 +52,24 @@ class SiteTreeView(QWidget):
         title = QLabel("Площадка", self)
         title.setObjectName("SidebarBrand")
         layout.addWidget(title)
+        loc = QLabel("Локации", self)
+        loc.setObjectName("SectionTitle")
+        loc.setContentsMargins(16, 4, 16, 0)
+        layout.addWidget(loc)
 
         self._tree = QTreeWidget(self)
         self._tree.setHeaderHidden(True)
         self._tree.setAnimated(True)
         self._tree.setIndentation(18)
         self._tree.setUniformRowHeights(True)
-        # Явная палитра: глобальный QSS на Windows часто игнорирует цвет item.
         pal = self._tree.palette()
-        pal.setColor(QPalette.ColorRole.Base, QColor("#ffffff"))
-        pal.setColor(QPalette.ColorRole.Text, QColor("#0f172a"))
-        pal.setColor(QPalette.ColorRole.WindowText, QColor("#0f172a"))
-        pal.setColor(QPalette.ColorRole.Highlight, QColor("#14b8a6"))
-        pal.setColor(QPalette.ColorRole.HighlightedText, QColor("#042f2e"))
+        pal.setColor(QPalette.ColorRole.Base, _BG_BASE)
+        pal.setColor(QPalette.ColorRole.Text, _TEXT_MAIN)
+        pal.setColor(QPalette.ColorRole.WindowText, _TEXT_MAIN)
+        pal.setColor(QPalette.ColorRole.Highlight, _BG_SELECTED)
+        pal.setColor(QPalette.ColorRole.HighlightedText, _ACCENT)
         self._tree.setPalette(pal)
-        self._fg = QBrush(QColor("#0f172a"))
+        self._fg = QBrush(_TEXT_MAIN)
         self._tree.itemSelectionChanged.connect(self._emit_selection)
         self._tree.itemDoubleClicked.connect(self._on_double_click)
         self._tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -88,6 +97,7 @@ class SiteTreeView(QWidget):
         self._btn_edit = QPushButton("Изменить…", self)
         self._btn_delete = QPushButton("Удалить", self)
         self._btn_delete.setObjectName("DangerButton")
+        self._btn_delete.setProperty("role", "danger")
         self._btn_edit.clicked.connect(self._emit_edit)
         self._btn_delete.clicked.connect(self._emit_delete)
         edit_row.addWidget(self._btn_edit)

@@ -7,24 +7,29 @@ import json
 from uuid import UUID
 
 from landesigner.domain.entities import (
-    Cable,
     Building,
+    Cable,
     Device,
     DeviceType,
     Floor,
+    FloorPlanAsset,
     IpAddress,
+    Lag,
     Port,
     ProjectMeta,
     ProjectSnapshot,
     Rack,
     Room,
     Site,
+    TopologyLink,
+    TopologyNode,
     Vlan,
 )
 from landesigner.domain.enums import (
     CableCategory,
     CableKind,
     DeviceRole,
+    LagMode,
     PortMedia,
     PortMode,
     PortStatus,
@@ -95,6 +100,8 @@ class LocalSqliteRepository(ProjectRepository):
                 id TEXT PRIMARY KEY NOT NULL,
                 site_id TEXT NOT NULL,
                 name TEXT NOT NULL,
+                address TEXT NOT NULL DEFAULT '',
+                notes TEXT NOT NULL DEFAULT '',
                 FOREIGN KEY(site_id) REFERENCES site(id) ON DELETE CASCADE
             )
             """
@@ -214,6 +221,7 @@ class LocalSqliteRepository(ProjectRepository):
                 site_id TEXT NOT NULL,
                 vlan_id INTEGER NOT NULL,
                 name TEXT NOT NULL DEFAULT '',
+                description TEXT NOT NULL DEFAULT '',
                 FOREIGN KEY(site_id) REFERENCES site(id) ON DELETE CASCADE
             )
             """
@@ -236,6 +244,33 @@ class LocalSqliteRepository(ProjectRepository):
 
         con.execute(
             """
+            CREATE TABLE IF NOT EXISTS lag (
+                id TEXT PRIMARY KEY NOT NULL,
+                site_id TEXT NOT NULL,
+                device_id TEXT NOT NULL,
+                name TEXT NOT NULL DEFAULT 'bond0',
+                mode TEXT NOT NULL DEFAULT 'ACTIVE_BACKUP',
+                notes TEXT NOT NULL DEFAULT '',
+                FOREIGN KEY(site_id) REFERENCES site(id) ON DELETE CASCADE,
+                FOREIGN KEY(device_id) REFERENCES device(id) ON DELETE CASCADE
+            )
+            """
+        )
+
+        con.execute(
+            """
+            CREATE TABLE IF NOT EXISTS lag_member (
+                lag_id TEXT NOT NULL,
+                port_id TEXT NOT NULL,
+                PRIMARY KEY (lag_id, port_id),
+                FOREIGN KEY(lag_id) REFERENCES lag(id) ON DELETE CASCADE,
+                FOREIGN KEY(port_id) REFERENCES port(id) ON DELETE CASCADE
+            )
+            """
+        )
+
+        con.execute(
+            """
             CREATE TABLE IF NOT EXISTS port_tagged_vlan (
                 port_id TEXT NOT NULL,
                 vlan_id TEXT NOT NULL,
@@ -245,8 +280,59 @@ class LocalSqliteRepository(ProjectRepository):
             )
             """
         )
+
+        con.execute(
+            """
+            CREATE TABLE IF NOT EXISTS topology_node (
+                id TEXT PRIMARY KEY NOT NULL,
+                site_id TEXT NOT NULL,
+                device_id TEXT NOT NULL UNIQUE,
+                x REAL NOT NULL DEFAULT 0,
+                y REAL NOT NULL DEFAULT 0,
+                FOREIGN KEY(site_id) REFERENCES site(id) ON DELETE CASCADE,
+                FOREIGN KEY(device_id) REFERENCES device(id) ON DELETE CASCADE
+            )
+            """
+        )
+
+        con.execute(
+            """
+            CREATE TABLE IF NOT EXISTS topology_link (
+                id TEXT PRIMARY KEY NOT NULL,
+                site_id TEXT NOT NULL,
+                topology_node_a_id TEXT NOT NULL,
+                topology_node_b_id TEXT NOT NULL,
+                cable_id TEXT,
+                FOREIGN KEY(site_id) REFERENCES site(id) ON DELETE CASCADE,
+                FOREIGN KEY(topology_node_a_id) REFERENCES topology_node(id) ON DELETE CASCADE,
+                FOREIGN KEY(topology_node_b_id) REFERENCES topology_node(id) ON DELETE CASCADE,
+                FOREIGN KEY(cable_id) REFERENCES cable(id) ON DELETE CASCADE
+            )
+            """
+        )
+
+        con.execute(
+            """
+            CREATE TABLE IF NOT EXISTS floor_plan_asset (
+                id TEXT PRIMARY KEY NOT NULL,
+                floor_id TEXT NOT NULL,
+                device_id TEXT NOT NULL,
+                x REAL NOT NULL DEFAULT 0,
+                y REAL NOT NULL DEFAULT 0,
+                rotation REAL NOT NULL DEFAULT 0,
+                FOREIGN KEY(floor_id) REFERENCES floor(id) ON DELETE CASCADE,
+                FOREIGN KEY(device_id) REFERENCES device(id) ON DELETE CASCADE,
+                UNIQUE(floor_id, device_id)
+            )
+            """
+        )
+
         self._ensure_column(con, "port", "access_vlan_id", "TEXT")
         self._ensure_column(con, "port", "mode", "TEXT NOT NULL DEFAULT 'ACCESS'")
+        self._ensure_column(con, "building", "address", "TEXT NOT NULL DEFAULT ''")
+        self._ensure_column(con, "building", "notes", "TEXT NOT NULL DEFAULT ''")
+        self._ensure_column(con, "ip_address", "lag_id", "TEXT")
+        self._ensure_column(con, "vlan", "description", "TEXT NOT NULL DEFAULT ''")
         con.commit()
 
     def _ensure_column(
@@ -270,7 +356,12 @@ class LocalSqliteRepository(ProjectRepository):
 
             # Один файл = один проект.
             con.execute("PRAGMA foreign_keys = ON")
+            con.execute("DELETE FROM floor_plan_asset")
+            con.execute("DELETE FROM topology_link")
+            con.execute("DELETE FROM topology_node")
             con.execute("DELETE FROM ip_address")
+            con.execute("DELETE FROM lag_member")
+            con.execute("DELETE FROM lag")
             con.execute("DELETE FROM port_tagged_vlan")
             con.execute("DELETE FROM cable")
             con.execute("DELETE FROM port")
@@ -372,14 +463,21 @@ class LocalSqliteRepository(ProjectRepository):
 
             buildings_rows = con.execute(
                 f"""
-                SELECT id, site_id, name
+                SELECT id, site_id, name, address, notes
                 FROM building
                 WHERE site_id IN ({placeholders_sites})
                 """,
                 site_ids,
             ).fetchall()
             buildings = [
-                Building(id=UUID(r[0]), site_id=UUID(r[1]), name=r[2]) for r in buildings_rows
+                Building(
+                    id=UUID(r[0]),
+                    site_id=UUID(r[1]),
+                    name=r[2],
+                    address=r[3] or "",
+                    notes=r[4] or "",
+                )
+                for r in buildings_rows
             ]
 
             building_ids = [r[0] for r in buildings_rows]
@@ -557,20 +655,26 @@ class LocalSqliteRepository(ProjectRepository):
 
             vlan_rows = con.execute(
                 f"""
-                SELECT id, site_id, vlan_id, name
+                SELECT id, site_id, vlan_id, name, description
                 FROM vlan
                 WHERE site_id IN ({placeholders_sites})
                 """,
                 site_ids,
             ).fetchall()
             vlans = [
-                Vlan(id=UUID(r[0]), site_id=UUID(r[1]), vlan_id=int(r[2]), name=r[3])
+                Vlan(
+                    id=UUID(r[0]),
+                    site_id=UUID(r[1]),
+                    vlan_id=int(r[2]),
+                    name=r[3] or "",
+                    description=r[4] or "",
+                )
                 for r in vlan_rows
             ]
 
             ip_rows = con.execute(
                 f"""
-                SELECT id, site_id, port_id, address, cidr, gateway
+                SELECT id, site_id, port_id, address, cidr, gateway, lag_id
                 FROM ip_address
                 WHERE site_id IN ({placeholders_sites})
                 """,
@@ -584,9 +688,124 @@ class LocalSqliteRepository(ProjectRepository):
                     address=r[3],
                     cidr=r[4],
                     gateway=r[5],
+                    lag_id=UUID(r[6]) if len(r) > 6 and r[6] is not None else None,
                 )
                 for r in ip_rows
             ]
+
+            lags: list[Lag] = []
+            try:
+                lag_rows = con.execute(
+                    f"""
+                    SELECT id, site_id, device_id, name, mode, notes
+                    FROM lag
+                    WHERE site_id IN ({placeholders_sites})
+                    """,
+                    site_ids,
+                ).fetchall()
+                member_map: dict[str, list[UUID]] = {}
+                if lag_rows:
+                    lag_ids = [r[0] for r in lag_rows]
+                    placeholders_lags = _in_placeholders(lag_ids)
+                    member_rows = con.execute(
+                        f"""
+                        SELECT lag_id, port_id
+                        FROM lag_member
+                        WHERE lag_id IN ({placeholders_lags})
+                        """,
+                        lag_ids,
+                    ).fetchall()
+                    for lag_id, port_id in member_rows:
+                        member_map.setdefault(str(lag_id), []).append(UUID(str(port_id)))
+                lags = [
+                    Lag(
+                        id=UUID(r[0]),
+                        site_id=UUID(r[1]),
+                        device_id=UUID(r[2]),
+                        name=r[3],
+                        mode=(
+                            LagMode(r[4])
+                            if r[4] in {m.value for m in LagMode}
+                            else LagMode.ACTIVE_BACKUP
+                        ),
+                        notes=r[5] or "",
+                        member_port_ids=member_map.get(str(r[0]), []),
+                    )
+                    for r in lag_rows
+                ]
+            except sqlite3.OperationalError:
+                lags = []
+
+            topology_nodes: list[TopologyNode] = []
+            topology_links: list[TopologyLink] = []
+            try:
+                node_rows = con.execute(
+                    f"""
+                    SELECT id, site_id, device_id, x, y
+                    FROM topology_node
+                    WHERE site_id IN ({placeholders_sites})
+                    """,
+                    site_ids,
+                ).fetchall()
+                topology_nodes = [
+                    TopologyNode(
+                        id=UUID(r[0]),
+                        site_id=UUID(r[1]),
+                        device_id=UUID(r[2]),
+                        x=float(r[3]),
+                        y=float(r[4]),
+                    )
+                    for r in node_rows
+                ]
+
+                link_rows = con.execute(
+                    f"""
+                    SELECT id, site_id, topology_node_a_id, topology_node_b_id, cable_id
+                    FROM topology_link
+                    WHERE site_id IN ({placeholders_sites})
+                    """,
+                    site_ids,
+                ).fetchall()
+                topology_links = [
+                    TopologyLink(
+                        id=UUID(r[0]),
+                        site_id=UUID(r[1]),
+                        topology_node_a_id=UUID(r[2]),
+                        topology_node_b_id=UUID(r[3]),
+                        cable_id=UUID(r[4]) if r[4] is not None else None,
+                    )
+                    for r in link_rows
+                ]
+            except sqlite3.OperationalError:
+                # Старые .lanproj без таблиц топологии — схема досоздастся при save.
+                topology_nodes = []
+                topology_links = []
+
+            floor_plan_assets: list[FloorPlanAsset] = []
+            try:
+                asset_rows = con.execute(
+                    f"""
+                    SELECT a.id, a.floor_id, a.device_id, a.x, a.y, a.rotation
+                    FROM floor_plan_asset a
+                    JOIN floor f ON f.id = a.floor_id
+                    JOIN building b ON b.id = f.building_id
+                    WHERE b.site_id IN ({placeholders_sites})
+                    """,
+                    site_ids,
+                ).fetchall()
+                floor_plan_assets = [
+                    FloorPlanAsset(
+                        id=UUID(r[0]),
+                        floor_id=UUID(r[1]),
+                        device_id=UUID(r[2]),
+                        x=float(r[3]),
+                        y=float(r[4]),
+                        rotation=float(r[5]),
+                    )
+                    for r in asset_rows
+                ]
+            except sqlite3.OperationalError:
+                floor_plan_assets = []
 
             return ProjectSnapshot(
                 meta=meta,
@@ -600,7 +819,11 @@ class LocalSqliteRepository(ProjectRepository):
                 ports=ports,
                 cables=cables,
                 vlans=vlans,
+                lags=lags,
                 ips=ips,
+                topology_nodes=topology_nodes,
+                topology_links=topology_links,
+                floor_plan_assets=floor_plan_assets,
             )
 
     def save_project(self, file_path: str, snapshot: ProjectSnapshot) -> None:
@@ -616,7 +839,12 @@ class LocalSqliteRepository(ProjectRepository):
             # Иначе после «Новый» + сохранение поверх старого файла в БД остаются
             # старые project_meta, а load_project(LIMIT 1) может открыть не тот проект.
             con.execute("PRAGMA foreign_keys = ON")
+            con.execute("DELETE FROM floor_plan_asset")
+            con.execute("DELETE FROM topology_link")
+            con.execute("DELETE FROM topology_node")
             con.execute("DELETE FROM ip_address")
+            con.execute("DELETE FROM lag_member")
+            con.execute("DELETE FROM lag")
             con.execute("DELETE FROM port_tagged_vlan")
             con.execute("DELETE FROM cable")
             con.execute("DELETE FROM port")
@@ -663,10 +891,16 @@ class LocalSqliteRepository(ProjectRepository):
             for b in snapshot.buildings:
                 con.execute(
                     """
-                    INSERT INTO building(id, site_id, name)
-                    VALUES(?, ?, ?)
+                    INSERT INTO building(id, site_id, name, address, notes)
+                    VALUES(?, ?, ?, ?, ?)
                     """,
-                    (_uuid_str(b.id), _uuid_str(b.site_id), b.name),
+                    (
+                        _uuid_str(b.id),
+                        _uuid_str(b.site_id),
+                        b.name,
+                        b.address,
+                        b.notes,
+                    ),
                 )
 
             for f in snapshot.floors:
@@ -750,14 +984,15 @@ class LocalSqliteRepository(ProjectRepository):
             for v in snapshot.vlans:
                 con.execute(
                     """
-                    INSERT INTO vlan(id, site_id, vlan_id, name)
-                    VALUES(?, ?, ?, ?)
+                    INSERT INTO vlan(id, site_id, vlan_id, name, description)
+                    VALUES(?, ?, ?, ?, ?)
                     """,
                     (
                         _uuid_str(v.id),
                         _uuid_str(v.site_id),
                         int(v.vlan_id),
                         v.name,
+                        v.description,
                     ),
                 )
 
@@ -809,11 +1044,35 @@ class LocalSqliteRepository(ProjectRepository):
                     ),
                 )
 
+            for lag in snapshot.lags:
+                con.execute(
+                    """
+                    INSERT INTO lag(id, site_id, device_id, name, mode, notes)
+                    VALUES(?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        _uuid_str(lag.id),
+                        _uuid_str(lag.site_id),
+                        _uuid_str(lag.device_id),
+                        lag.name,
+                        _enum_value(lag.mode),
+                        lag.notes,
+                    ),
+                )
+                for port_id in lag.member_port_ids:
+                    con.execute(
+                        """
+                        INSERT INTO lag_member(lag_id, port_id)
+                        VALUES(?, ?)
+                        """,
+                        (_uuid_str(lag.id), _uuid_str(port_id)),
+                    )
+
             for ip in snapshot.ips:
                 con.execute(
                     """
-                    INSERT INTO ip_address(id, site_id, port_id, address, cidr, gateway)
-                    VALUES(?, ?, ?, ?, ?, ?)
+                    INSERT INTO ip_address(id, site_id, port_id, address, cidr, gateway, lag_id)
+                    VALUES(?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         _uuid_str(ip.id),
@@ -822,6 +1081,55 @@ class LocalSqliteRepository(ProjectRepository):
                         ip.address,
                         ip.cidr,
                         ip.gateway,
+                        _uuid_str(ip.lag_id) if ip.lag_id is not None else None,
+                    ),
+                )
+
+            for node in snapshot.topology_nodes:
+                con.execute(
+                    """
+                    INSERT INTO topology_node(id, site_id, device_id, x, y)
+                    VALUES(?, ?, ?, ?, ?)
+                    """,
+                    (
+                        _uuid_str(node.id),
+                        _uuid_str(node.site_id),
+                        _uuid_str(node.device_id),
+                        float(node.x),
+                        float(node.y),
+                    ),
+                )
+
+            for link in snapshot.topology_links:
+                con.execute(
+                    """
+                    INSERT INTO topology_link(
+                        id, site_id, topology_node_a_id, topology_node_b_id, cable_id
+                    )
+                    VALUES(?, ?, ?, ?, ?)
+                    """,
+                    (
+                        _uuid_str(link.id),
+                        _uuid_str(link.site_id),
+                        _uuid_str(link.topology_node_a_id),
+                        _uuid_str(link.topology_node_b_id),
+                        _uuid_str(link.cable_id) if link.cable_id is not None else None,
+                    ),
+                )
+
+            for asset in snapshot.floor_plan_assets:
+                con.execute(
+                    """
+                    INSERT INTO floor_plan_asset(id, floor_id, device_id, x, y, rotation)
+                    VALUES(?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        _uuid_str(asset.id),
+                        _uuid_str(asset.floor_id),
+                        _uuid_str(asset.device_id),
+                        float(asset.x),
+                        float(asset.y),
+                        float(asset.rotation),
                     ),
                 )
 

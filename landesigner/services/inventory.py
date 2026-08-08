@@ -10,6 +10,7 @@ from landesigner.domain.entities import (
     DeviceType,
     Floor,
     IpAddress,
+    Lag,
     Port,
     ProjectSnapshot,
     Rack,
@@ -20,6 +21,7 @@ from landesigner.domain.enums import (
     CableCategory,
     CableKind,
     DeviceRole,
+    LagMode,
     PortMedia,
     PortMode,
     PortStatus,
@@ -32,11 +34,67 @@ def _require_site(snapshot: ProjectSnapshot) -> UUID:
     return snapshot.sites[0].id
 
 
-def add_building(snapshot: ProjectSnapshot, name: str) -> Building:
+def add_building(
+    snapshot: ProjectSnapshot,
+    name: str,
+    *,
+    address: str = "",
+    notes: str = "",
+) -> Building:
     site_id = _require_site(snapshot)
-    building = Building(site_id=site_id, name=name.strip() or "Здание")
+    building = Building(
+        site_id=site_id,
+        name=name.strip() or "Здание",
+        address=address.strip(),
+        notes=notes.strip(),
+    )
     snapshot.buildings.append(building)
     return building
+
+
+def update_building(
+    snapshot: ProjectSnapshot,
+    building_id: UUID,
+    *,
+    name: str,
+    address: str = "",
+    notes: str = "",
+) -> Building:
+    building = next((b for b in snapshot.buildings if b.id == building_id), None)
+    if building is None:
+        raise ValueError("Здание не найдено")
+    building.name = name.strip() or "Здание"
+    building.address = address.strip()
+    building.notes = notes.strip()
+    return building
+
+
+def building_stats(snapshot: ProjectSnapshot, building_id: UUID) -> dict[str, int]:
+    floors = [f for f in snapshot.floors if f.building_id == building_id]
+    floor_ids = {f.id for f in floors}
+    rooms = [r for r in snapshot.rooms if r.floor_id in floor_ids]
+    room_ids = {r.id for r in rooms}
+    racks = [rk for rk in snapshot.racks if rk.room_id in room_ids]
+    devices = [d for d in snapshot.devices if d.room_id in room_ids]
+    return {
+        "floors": len(floors),
+        "rooms": len(rooms),
+        "racks": len(racks),
+        "devices": len(devices),
+    }
+
+
+def project_stats(snapshot: ProjectSnapshot) -> dict[str, int]:
+    return {
+        "buildings": len(snapshot.buildings),
+        "floors": len(snapshot.floors),
+        "rooms": len(snapshot.rooms),
+        "racks": len(snapshot.racks),
+        "devices": len(snapshot.devices),
+        "cables": len(snapshot.cables),
+        "types": len(snapshot.device_types),
+        "vlans": len(snapshot.vlans),
+    }
 
 
 def add_floor(
@@ -82,13 +140,6 @@ def update_site(snapshot: ProjectSnapshot, site_id: UUID, name: str) -> None:
     if site is None:
         raise ValueError("Площадка не найдена")
     site.name = name.strip() or site.name
-
-
-def update_building(snapshot: ProjectSnapshot, building_id: UUID, name: str) -> None:
-    building = next((b for b in snapshot.buildings if b.id == building_id), None)
-    if building is None:
-        raise ValueError("Здание не найдено")
-    building.name = name.strip() or building.name
 
 
 def update_floor(
@@ -298,6 +349,82 @@ def _ports_from_template(device_id: UUID, template: list[dict]) -> list[Port]:
     return ports
 
 
+def update_port(
+    snapshot: ProjectSnapshot,
+    port_id: UUID,
+    *,
+    name: str | None = None,
+    speed: int | None = None,
+    media: PortMedia | str | None = None,
+) -> Port:
+    port = next((p for p in snapshot.ports if p.id == port_id), None)
+    if port is None:
+        raise ValueError("Порт не найден")
+    if name is not None:
+        cleaned = name.strip()
+        if not cleaned:
+            raise ValueError("Имя порта не может быть пустым")
+        siblings = [
+            p for p in snapshot.ports if p.device_id == port.device_id and p.id != port_id
+        ]
+        if any(p.name == cleaned for p in siblings):
+            raise ValueError(f"Порт «{cleaned}» уже есть на устройстве")
+        port.name = cleaned
+    if speed is not None:
+        if int(speed) <= 0:
+            raise ValueError("Скорость должна быть больше 0")
+        port.speed = int(speed)
+    if media is not None:
+        port.media = media if isinstance(media, PortMedia) else PortMedia(str(media))
+    return port
+
+
+def add_port(
+    snapshot: ProjectSnapshot,
+    device_id: UUID,
+    name: str,
+    *,
+    speed: int = 1000,
+    media: PortMedia | str = PortMedia.COPPER,
+) -> Port:
+    device = next((d for d in snapshot.devices if d.id == device_id), None)
+    if device is None:
+        raise ValueError("Устройство не найдено")
+    cleaned = name.strip()
+    if not cleaned:
+        raise ValueError("Имя порта не может быть пустым")
+    if any(p.name == cleaned for p in snapshot.ports if p.device_id == device_id):
+        raise ValueError(f"Порт «{cleaned}» уже есть на устройстве")
+    if int(speed) <= 0:
+        raise ValueError("Скорость должна быть больше 0")
+    media_enum = media if isinstance(media, PortMedia) else PortMedia(str(media))
+    port = Port(
+        device_id=device_id,
+        name=cleaned,
+        speed=int(speed),
+        media=media_enum,
+        status=PortStatus.FREE,
+    )
+    snapshot.ports.append(port)
+    return port
+
+
+def delete_port(snapshot: ProjectSnapshot, port_id: UUID) -> None:
+    port = next((p for p in snapshot.ports if p.id == port_id), None)
+    if port is None:
+        return
+    lag = lag_for_port(snapshot, port_id)
+    if lag is not None:
+        raise ValueError(
+            f"Порт входит в LAG «{lag.name}». Сначала уберите его из агрегата."
+        )
+    cable = cable_for_port(snapshot, port_id)
+    if cable is not None:
+        delete_cable(snapshot, cable.id)
+    snapshot.ips = [ip for ip in snapshot.ips if ip.port_id != port_id]
+    snapshot.ports = [p for p in snapshot.ports if p.id != port_id]
+
+
 def add_device(
     snapshot: ProjectSnapshot,
     device_type_id: UUID,
@@ -366,6 +493,7 @@ def delete_device(snapshot: ProjectSnapshot, device_id: UUID) -> None:
         return
 
     port_ids = {p.id for p in snapshot.ports if p.device_id == device_id}
+    lag_ids = {lag.id for lag in snapshot.lags if lag.device_id == device_id}
     for cable in list(snapshot.cables):
         touches = cable.end_a_port_id in port_ids or cable.end_b_port_id in port_ids
         if not touches:
@@ -379,7 +507,12 @@ def delete_device(snapshot: ProjectSnapshot, device_id: UUID) -> None:
             _release_port(snapshot, other_id)
         snapshot.cables.remove(cable)
 
-    snapshot.ips = [ip for ip in snapshot.ips if ip.port_id not in port_ids]
+    snapshot.ips = [
+        ip
+        for ip in snapshot.ips
+        if ip.port_id not in port_ids and ip.lag_id not in lag_ids
+    ]
+    snapshot.lags = [lag for lag in snapshot.lags if lag.device_id != device_id]
     snapshot.ports = [p for p in snapshot.ports if p.device_id != device_id]
     snapshot.devices = [d for d in snapshot.devices if d.id != device_id]
     snapshot.topology_nodes = [n for n in snapshot.topology_nodes if n.device_id != device_id]
@@ -388,6 +521,139 @@ def delete_device(snapshot: ProjectSnapshot, device_id: UUID) -> None:
 
 def ports_for_device(snapshot: ProjectSnapshot, device_id: UUID) -> list[Port]:
     return [p for p in snapshot.ports if p.device_id == device_id]
+
+
+def lags_for_device(snapshot: ProjectSnapshot, device_id: UUID) -> list[Lag]:
+    return [lag for lag in snapshot.lags if lag.device_id == device_id]
+
+
+def lag_for_port(snapshot: ProjectSnapshot, port_id: UUID) -> Lag | None:
+    for lag in snapshot.lags:
+        if port_id in lag.member_port_ids:
+            return lag
+    return None
+
+
+def ips_for_lag(snapshot: ProjectSnapshot, lag_id: UUID) -> list[IpAddress]:
+    return [ip for ip in snapshot.ips if ip.lag_id == lag_id]
+
+
+def lag_member_labels(snapshot: ProjectSnapshot, lag: Lag) -> str:
+    names: list[str] = []
+    ports = {p.id: p for p in snapshot.ports}
+    for port_id in lag.member_port_ids:
+        port = ports.get(port_id)
+        names.append(port.name if port else str(port_id)[:8])
+    return "+".join(names) if names else "—"
+
+
+def _validate_lag_members(
+    snapshot: ProjectSnapshot,
+    device_id: UUID,
+    member_port_ids: list[UUID],
+    *,
+    exclude_lag_id: UUID | None = None,
+) -> list[UUID]:
+    unique: list[UUID] = []
+    seen: set[UUID] = set()
+    for port_id in member_port_ids:
+        if port_id in seen:
+            continue
+        seen.add(port_id)
+        unique.append(port_id)
+    if len(unique) < 2:
+        raise ValueError("В LAG нужно минимум два порта")
+    for port_id in unique:
+        port = _find_port(snapshot, port_id)
+        if port.device_id != device_id:
+            raise ValueError("Все порты LAG должны принадлежать одному устройству")
+        other = lag_for_port(snapshot, port_id)
+        if other is not None and other.id != exclude_lag_id:
+            raise ValueError(f"Порт {port.name} уже в LAG «{other.name}»")
+    return unique
+
+
+def add_lag(
+    snapshot: ProjectSnapshot,
+    *,
+    device_id: UUID,
+    name: str,
+    mode: LagMode | str,
+    member_port_ids: list[UUID],
+    notes: str = "",
+) -> Lag:
+    site_id = _require_site(snapshot)
+    if not any(d.id == device_id for d in snapshot.devices):
+        raise ValueError("Устройство не найдено")
+    mode_enum = mode if isinstance(mode, LagMode) else LagMode(str(mode))
+    members = _validate_lag_members(snapshot, device_id, member_port_ids)
+    lag = Lag(
+        site_id=site_id,
+        device_id=device_id,
+        name=(name.strip() or "bond0"),
+        mode=mode_enum,
+        member_port_ids=members,
+        notes=notes.strip(),
+    )
+    snapshot.lags.append(lag)
+    return lag
+
+
+def update_lag(
+    snapshot: ProjectSnapshot,
+    lag_id: UUID,
+    *,
+    name: str | None = None,
+    mode: LagMode | str | None = None,
+    member_port_ids: list[UUID] | None = None,
+    notes: str | None = None,
+) -> Lag:
+    lag = next((item for item in snapshot.lags if item.id == lag_id), None)
+    if lag is None:
+        raise ValueError("LAG не найден")
+    if name is not None:
+        lag.name = name.strip() or lag.name
+    if mode is not None:
+        lag.mode = mode if isinstance(mode, LagMode) else LagMode(str(mode))
+    if member_port_ids is not None:
+        lag.member_port_ids = _validate_lag_members(
+            snapshot,
+            lag.device_id,
+            member_port_ids,
+            exclude_lag_id=lag.id,
+        )
+    if notes is not None:
+        lag.notes = notes.strip()
+    return lag
+
+
+def delete_lag(snapshot: ProjectSnapshot, lag_id: UUID) -> None:
+    snapshot.ips = [ip for ip in snapshot.ips if ip.lag_id != lag_id]
+    snapshot.lags = [lag for lag in snapshot.lags if lag.id != lag_id]
+
+
+def device_location_label(snapshot: ProjectSnapshot, device_id: UUID) -> str:
+    device = next((d for d in snapshot.devices if d.id == device_id), None)
+    if device is None:
+        return "—"
+    parts: list[str] = []
+    room = next((r for r in snapshot.rooms if r.id == device.room_id), None) if device.room_id else None
+    rack = next((r for r in snapshot.racks if r.id == device.rack_id), None) if device.rack_id else None
+    floor = None
+    building = None
+    if room is not None:
+        floor = next((f for f in snapshot.floors if f.id == room.floor_id), None)
+    if floor is not None:
+        building = next((b for b in snapshot.buildings if b.id == floor.building_id), None)
+    if building is not None:
+        parts.append(building.name)
+    if floor is not None:
+        parts.append(floor.name)
+    if room is not None:
+        parts.append(room.name)
+    if rack is not None:
+        parts.append(rack.name)
+    return " / ".join(parts) if parts else "—"
 
 
 def _find_port(snapshot: ProjectSnapshot, port_id: UUID) -> Port:
@@ -515,6 +781,22 @@ def delete_cable(snapshot: ProjectSnapshot, cable_id: UUID) -> None:
     ]
 
 
+def restore_cable(snapshot: ProjectSnapshot, cable: Cable) -> Cable:
+    """Вернуть ранее удалённый кабель (для Undo), с теми же UUID."""
+    if any(c.id == cable.id for c in snapshot.cables):
+        return cable
+    if cable.end_a_port_id == cable.end_b_port_id:
+        raise ValueError("Концы кабеля должны быть разными портами")
+    _occupy_port(snapshot, cable.end_a_port_id)
+    try:
+        _occupy_port(snapshot, cable.end_b_port_id)
+    except Exception:
+        _release_port(snapshot, cable.end_a_port_id)
+        raise
+    snapshot.cables.append(cable)
+    return cable
+
+
 def update_cable(
     snapshot: ProjectSnapshot,
     cable_id: UUID,
@@ -576,13 +858,23 @@ def ip_label(ip: IpAddress) -> str:
     return ip.address
 
 
-def add_vlan(snapshot: ProjectSnapshot, vlan_id: int, name: str = "") -> Vlan:
+def add_vlan(
+    snapshot: ProjectSnapshot,
+    vlan_id: int,
+    name: str = "",
+    description: str = "",
+) -> Vlan:
     site_id = _require_site(snapshot)
     if not 1 <= int(vlan_id) <= 4094:
         raise ValueError("VLAN ID должен быть в диапазоне 1–4094")
     if any(v.vlan_id == int(vlan_id) for v in snapshot.vlans):
         raise ValueError(f"VLAN {vlan_id} уже существует")
-    vlan = Vlan(site_id=site_id, vlan_id=int(vlan_id), name=name.strip())
+    vlan = Vlan(
+        site_id=site_id,
+        vlan_id=int(vlan_id),
+        name=name.strip(),
+        description=description.strip(),
+    )
     snapshot.vlans.append(vlan)
     return vlan
 
@@ -593,6 +885,7 @@ def update_vlan(
     *,
     vlan_id: int | None = None,
     name: str | None = None,
+    description: str | None = None,
 ) -> Vlan:
     vlan = next((v for v in snapshot.vlans if v.id == vlan_uuid), None)
     if vlan is None:
@@ -605,6 +898,8 @@ def update_vlan(
         vlan.vlan_id = int(vlan_id)
     if name is not None:
         vlan.name = name.strip()
+    if description is not None:
+        vlan.description = description.strip()
     return vlan
 
 
@@ -715,10 +1010,16 @@ def add_ip(
     cidr: str = "",
     gateway: str = "",
     port_id: UUID | None = None,
+    lag_id: UUID | None = None,
 ) -> IpAddress:
     site_id = _require_site(snapshot)
+    if port_id is not None and lag_id is not None:
+        raise ValueError("IP нельзя привязать и к порту, и к LAG одновременно")
     if port_id is not None:
         _find_port(snapshot, port_id)
+    if lag_id is not None:
+        if not any(lag.id == lag_id for lag in snapshot.lags):
+            raise ValueError("LAG не найден")
     normalized = _normalize_address(address)
     _ensure_unique_ip(snapshot, normalized)
     gw = gateway.strip()
@@ -727,6 +1028,7 @@ def add_ip(
     ip = IpAddress(
         site_id=site_id,
         port_id=port_id,
+        lag_id=lag_id,
         address=normalized,
         cidr=_normalize_cidr(cidr, normalized),
         gateway=gw,
@@ -743,7 +1045,9 @@ def update_ip(
     cidr: str | None = None,
     gateway: str | None = None,
     port_id: UUID | None = None,
+    lag_id: UUID | None = None,
     clear_port: bool = False,
+    clear_lag: bool = False,
 ) -> IpAddress:
     ip = next((item for item in snapshot.ips if item.id == ip_id), None)
     if ip is None:
@@ -764,6 +1068,16 @@ def update_ip(
     elif port_id is not None:
         _find_port(snapshot, port_id)
         ip.port_id = port_id
+        ip.lag_id = None
+    if clear_lag:
+        ip.lag_id = None
+    elif lag_id is not None:
+        if not any(lag.id == lag_id for lag in snapshot.lags):
+            raise ValueError("LAG не найден")
+        ip.lag_id = lag_id
+        ip.port_id = None
+    if ip.port_id is not None and ip.lag_id is not None:
+        raise ValueError("IP нельзя привязать и к порту, и к LAG одновременно")
     return ip
 
 

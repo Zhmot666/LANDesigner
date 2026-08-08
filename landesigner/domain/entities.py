@@ -9,6 +9,7 @@ from landesigner.domain.enums import (
     CableCategory,
     CableKind,
     DeviceRole,
+    LagMode,
     PortMedia,
     PortMode,
     PortStatus,
@@ -43,6 +44,8 @@ class Building:
     id: UUID = field(default_factory=uuid4)
     site_id: UUID = field(default_factory=uuid4)
     name: str = "Здание"
+    address: str = ""
+    notes: str = ""
 
 
 @dataclass
@@ -128,6 +131,7 @@ class Vlan:
     site_id: UUID = field(default_factory=uuid4)
     vlan_id: int = 1
     name: str = ""
+    description: str = ""
 
 
 @dataclass
@@ -135,9 +139,23 @@ class IpAddress:
     id: UUID = field(default_factory=uuid4)
     site_id: UUID = field(default_factory=uuid4)
     port_id: Optional[UUID] = None
+    lag_id: Optional[UUID] = None
     address: str = ""  # e.g. 10.0.0.2
     cidr: str = ""  # e.g. 24
     gateway: str = ""
+
+
+@dataclass
+class Lag:
+    """Агрегация портов одного устройства (bond / LAG / team)."""
+
+    id: UUID = field(default_factory=uuid4)
+    site_id: UUID = field(default_factory=uuid4)
+    device_id: UUID = field(default_factory=uuid4)
+    name: str = "bond0"
+    mode: LagMode = LagMode.ACTIVE_BACKUP
+    member_port_ids: list[UUID] = field(default_factory=list)
+    notes: str = ""
 
 
 @dataclass
@@ -181,6 +199,7 @@ class ProjectSnapshot:
     ports: list[Port] = field(default_factory=list)
     cables: list[Cable] = field(default_factory=list)
     vlans: list[Vlan] = field(default_factory=list)
+    lags: list[Lag] = field(default_factory=list)
     ips: list[IpAddress] = field(default_factory=list)
     topology_nodes: list[TopologyNode] = field(default_factory=list)
     topology_links: list[TopologyLink] = field(default_factory=list)

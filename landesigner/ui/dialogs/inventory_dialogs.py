@@ -79,6 +79,89 @@ class NameDialog(QDialog):
         return self._name.text().strip()
 
 
+class ProjectDialog(QDialog):
+    """Имя проекта и сведения о площадке."""
+
+    def __init__(
+        self,
+        *,
+        project_name: str = "",
+        site_name: str = "",
+        address: str = "",
+        notes: str = "",
+        parent=None,
+    ) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Свойства проекта")
+        self.resize(420, 260)
+        layout = QVBoxLayout(self)
+        form = QFormLayout()
+        self._project_name = QLineEdit(project_name, self)
+        self._site_name = QLineEdit(site_name, self)
+        self._address = QLineEdit(address, self)
+        self._notes = QLineEdit(notes, self)
+        form.addRow("Имя проекта", self._project_name)
+        form.addRow("Площадка", self._site_name)
+        form.addRow("Адрес", self._address)
+        form.addRow("Заметки", self._notes)
+        layout.addLayout(form)
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        _russian_buttons(buttons)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+        self._project_name.selectAll()
+
+    def values(self) -> tuple[str, str, str, str]:
+        return (
+            self._project_name.text().strip() or "Новый проект",
+            self._site_name.text().strip() or "Площадка",
+            self._address.text().strip(),
+            self._notes.text().strip(),
+        )
+
+
+class BuildingDialog(QDialog):
+    def __init__(
+        self,
+        *,
+        initial_name: str = "",
+        initial_address: str = "",
+        initial_notes: str = "",
+        parent=None,
+    ) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Здание" if initial_name else "Добавить здание")
+        self.resize(420, 220)
+        layout = QVBoxLayout(self)
+        form = QFormLayout()
+        self._name = QLineEdit(initial_name, self)
+        self._address = QLineEdit(initial_address, self)
+        self._notes = QLineEdit(initial_notes, self)
+        form.addRow("Имя", self._name)
+        form.addRow("Адрес", self._address)
+        form.addRow("Заметки", self._notes)
+        layout.addLayout(form)
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        _russian_buttons(buttons)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+        if initial_name:
+            self._name.selectAll()
+
+    def values(self) -> tuple[str, str, str]:
+        return (
+            self._name.text().strip() or "Здание",
+            self._address.text().strip(),
+            self._notes.text().strip(),
+        )
+
+
 class FloorDialog(QDialog):
     def __init__(
         self,
@@ -127,10 +210,22 @@ class RackDialog(QDialog):
         if initial_name:
             self._name.setText(initial_name)
             self._name.selectAll()
+        self._template = QComboBox(self)
+        self._template.addItem("Свой размер", None)
+        from landesigner.services import catalog as catalog_svc
+
+        for preset in catalog_svc.list_rack_presets():
+            self._template.addItem(preset.title, preset.units)
+        # Выбрать ближайший пресет к initial_units
+        match_idx = self._template.findData(initial_units)
+        if match_idx >= 0:
+            self._template.setCurrentIndex(match_idx)
+        self._template.currentIndexChanged.connect(self._on_template)
         self._units = QSpinBox(self)
         self._units.setRange(1, 60)
         self._units.setValue(initial_units)
         form.addRow("Имя", self._name)
+        form.addRow("Шаблон", self._template)
         form.addRow("Юниты", self._units)
         layout.addLayout(form)
         buttons = QDialogButtonBox(
@@ -140,6 +235,11 @@ class RackDialog(QDialog):
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
+
+    def _on_template(self) -> None:
+        units = self._template.currentData()
+        if units is not None:
+            self._units.setValue(int(units))
 
     def values(self) -> tuple[str, int]:
         return self._name.text().strip() or "Шкаф", int(self._units.value())
@@ -545,6 +645,9 @@ class CableDialog(QDialog):
         snapshot: ProjectSnapshot,
         cable: Cable | None = None,
         parent=None,
+        *,
+        device_a_id: UUID | None = None,
+        device_b_id: UUID | None = None,
     ) -> None:
         super().__init__(parent)
         self._snapshot = snapshot
@@ -605,10 +708,22 @@ class CableDialog(QDialog):
             self._port_a.currentIndexChanged.connect(self._guess_kind)
             self._port_b.currentIndexChanged.connect(self._guess_kind)
             self._kind.currentIndexChanged.connect(self._sync_category_hint)
+            if device_a_id is not None:
+                idx = self._device_a.findData(str(device_a_id))
+                if idx >= 0:
+                    self._device_a.setCurrentIndex(idx)
             self._reload_ports_a()
-            self._reload_ports_b()
-            if self._device_b.count() > 1:
+            if device_b_id is not None:
+                idx = self._device_b.findData(str(device_b_id))
+                if idx >= 0:
+                    self._device_b.setCurrentIndex(idx)
+            elif self._device_b.count() > 1 and device_a_id is None:
                 self._device_b.setCurrentIndex(1)
+            self._reload_ports_b()
+            if device_a_id is not None and device_b_id is not None:
+                self._device_a.setEnabled(False)
+                self._device_b.setEnabled(False)
+                self._hint.setText("Устройства выбраны на схеме — укажите свободные порты.")
             self._guess_kind()
 
         buttons = QDialogButtonBox(
@@ -750,6 +865,7 @@ class VlanDialog(QDialog):
         self,
         initial_vlan_id: int = 10,
         initial_name: str = "",
+        initial_description: str = "",
         *,
         editing: bool = False,
         parent=None,
@@ -764,8 +880,12 @@ class VlanDialog(QDialog):
         self._vlan_id.setValue(int(initial_vlan_id))
         self._name = QLineEdit(self)
         self._name.setText(initial_name)
+        self._description = QLineEdit(self)
+        self._description.setText(initial_description)
+        self._description.setPlaceholderText("Назначение, подсеть, зона…")
         form.addRow("VLAN ID", self._vlan_id)
         form.addRow("Имя", self._name)
+        form.addRow("Описание", self._description)
         layout.addLayout(form)
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
@@ -775,8 +895,12 @@ class VlanDialog(QDialog):
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
 
-    def values(self) -> tuple[int, str]:
-        return int(self._vlan_id.value()), self._name.text().strip()
+    def values(self) -> tuple[int, str, str]:
+        return (
+            int(self._vlan_id.value()),
+            self._name.text().strip(),
+            self._description.text().strip(),
+        )
 
 
 class IpDialog(QDialog):
@@ -791,59 +915,204 @@ class IpDialog(QDialog):
         self._snapshot = snapshot
         self._ip = ip
         self.setWindowTitle("IP-адрес" if ip is None else "Изменить IP-адрес")
-        self.resize(480, 260)
+        self.resize(480, 300)
 
         layout = QVBoxLayout(self)
         form = QFormLayout()
 
+        self._bind = QComboBox(self)
+        self._bind.addItem("Не привязан", "none")
+        self._bind.addItem("Порт", "port")
+        self._bind.addItem("LAG", "lag")
         self._device = QComboBox(self)
         self._port = QComboBox(self)
+        self._lag = QComboBox(self)
         self._address = QLineEdit(self)
         self._cidr = QLineEdit(self)
         self._cidr.setPlaceholderText("24")
         self._gateway = QLineEdit(self)
 
-        self._device.addItem("(без порта)", None)
         for device in snapshot.devices:
             self._device.addItem(device.hostname or str(device.id), str(device.id))
 
+        form.addRow("Привязка", self._bind)
         form.addRow("Устройство", self._device)
         form.addRow("Порт", self._port)
+        form.addRow("LAG", self._lag)
         form.addRow("Адрес", self._address)
         form.addRow("Префикс", self._cidr)
         form.addRow("Шлюз", self._gateway)
         layout.addLayout(form)
 
-        self._device.currentIndexChanged.connect(self._reload_ports)
+        self._bind.currentIndexChanged.connect(self._on_bind_changed)
+        self._device.currentIndexChanged.connect(self._reload_targets)
 
         if ip is not None:
             self._address.setText(ip.address)
             self._cidr.setText(ip.cidr)
             self._gateway.setText(ip.gateway)
-            if ip.port_id is not None:
+            if ip.lag_id is not None:
+                lag = next((item for item in snapshot.lags if item.id == ip.lag_id), None)
+                self._bind.setCurrentIndex(self._bind.findData("lag"))
+                if lag is not None:
+                    didx = self._device.findData(str(lag.device_id))
+                    if didx >= 0:
+                        self._device.setCurrentIndex(didx)
+                self._reload_targets()
+                if lag is not None:
+                    lidx = self._lag.findData(str(lag.id))
+                    if lidx >= 0:
+                        self._lag.setCurrentIndex(lidx)
+            elif ip.port_id is not None:
                 port = next((p for p in snapshot.ports if p.id == ip.port_id), None)
+                self._bind.setCurrentIndex(self._bind.findData("port"))
                 if port is not None:
                     didx = self._device.findData(str(port.device_id))
                     if didx >= 0:
                         self._device.setCurrentIndex(didx)
-                    self._reload_ports()
+                self._reload_targets()
+                if port is not None:
                     pidx = self._port.findData(str(port.id))
                     if pidx >= 0:
                         self._port.setCurrentIndex(pidx)
             else:
-                self._reload_ports()
+                self._bind.setCurrentIndex(self._bind.findData("none"))
+                self._reload_targets()
         else:
             if preferred_port_id is not None:
                 port = next((p for p in snapshot.ports if p.id == preferred_port_id), None)
+                self._bind.setCurrentIndex(self._bind.findData("port"))
                 if port is not None:
                     didx = self._device.findData(str(port.device_id))
                     if didx >= 0:
                         self._device.setCurrentIndex(didx)
+                self._reload_targets()
+                if preferred_port_id is not None:
+                    pidx = self._port.findData(str(preferred_port_id))
+                    if pidx >= 0:
+                        self._port.setCurrentIndex(pidx)
+            else:
+                self._bind.setCurrentIndex(self._bind.findData("none"))
+                self._reload_targets()
+
+        self._on_bind_changed()
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        _russian_buttons(buttons)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def _on_bind_changed(self) -> None:
+        mode = self._bind.currentData()
+        self._device.setEnabled(mode in {"port", "lag"})
+        self._port.setEnabled(mode == "port")
+        self._lag.setEnabled(mode == "lag")
+        self._reload_targets()
+
+    def _reload_targets(self) -> None:
+        self._port.clear()
+        self._lag.clear()
+        self._port.addItem("(не выбран)", None)
+        self._lag.addItem("(не выбран)", None)
+        raw = self._device.currentData()
+        if raw is None:
+            return
+        device_id = UUID(str(raw))
+        for port in inventory_service.ports_for_device(self._snapshot, device_id):
+            self._port.addItem(port.name, str(port.id))
+        for lag in inventory_service.lags_for_device(self._snapshot, device_id):
+            self._lag.addItem(lag.name, str(lag.id))
+
+    def values(self) -> tuple[str, str, str, UUID | None, UUID | None]:
+        mode = self._bind.currentData()
+        port_id = None
+        lag_id = None
+        if mode == "port":
+            port_raw = self._port.currentData()
+            port_id = UUID(str(port_raw)) if port_raw is not None else None
+        elif mode == "lag":
+            lag_raw = self._lag.currentData()
+            lag_id = UUID(str(lag_raw)) if lag_raw is not None else None
+        return (
+            self._address.text().strip(),
+            self._cidr.text().strip(),
+            self._gateway.text().strip(),
+            port_id,
+            lag_id,
+        )
+
+    def is_valid(self) -> bool:
+        return bool(self._address.text().strip())
+
+
+class LagDialog(QDialog):
+    """Создание / правка LAG (bond) на устройстве."""
+
+    def __init__(
+        self,
+        snapshot: ProjectSnapshot,
+        lag=None,
+        preferred_device_id: UUID | None = None,
+        parent=None,
+    ) -> None:
+        super().__init__(parent)
+        self._snapshot = snapshot
+        self._lag = lag
+        self.setWindowTitle("LAG / bond" if lag is None else f"LAG «{lag.name}»")
+        self.resize(480, 420)
+
+        layout = QVBoxLayout(self)
+        form = QFormLayout()
+        self._device = QComboBox(self)
+        self._name = QLineEdit(self)
+        self._mode = QComboBox(self)
+        from landesigner.ui.labels import LAG_MODE_RU
+
+        for mode, label in LAG_MODE_RU.items():
+            self._mode.addItem(label, mode.value)
+        self._notes = QLineEdit(self)
+
+        for device in snapshot.devices:
+            self._device.addItem(device.hostname or str(device.id), str(device.id))
+
+        form.addRow("Устройство", self._device)
+        form.addRow("Имя", self._name)
+        form.addRow("Режим", self._mode)
+        form.addRow("Заметки", self._notes)
+        layout.addLayout(form)
+
+        layout.addWidget(QLabel("Порты (минимум 2):", self))
+        self._ports = QListWidget(self)
+        self._ports.setSelectionMode(QListWidget.SelectionMode.MultiSelection)
+        layout.addWidget(self._ports, stretch=1)
+
+        self._device.currentIndexChanged.connect(self._reload_ports)
+        self._device.setEnabled(lag is None)
+
+        if lag is not None:
+            self._name.setText(lag.name)
+            self._notes.setText(lag.notes)
+            midx = self._mode.findData(lag.mode.value)
+            if midx >= 0:
+                self._mode.setCurrentIndex(midx)
+            didx = self._device.findData(str(lag.device_id))
+            if didx >= 0:
+                self._device.setCurrentIndex(didx)
             self._reload_ports()
-            if preferred_port_id is not None:
-                pidx = self._port.findData(str(preferred_port_id))
-                if pidx >= 0:
-                    self._port.setCurrentIndex(pidx)
+            selected = {str(pid) for pid in lag.member_port_ids}
+            for i in range(self._ports.count()):
+                item = self._ports.item(i)
+                if item is not None and str(item.data(Qt.ItemDataRole.UserRole)) in selected:
+                    item.setSelected(True)
+        else:
+            self._name.setText("bond0")
+            if preferred_device_id is not None:
+                didx = self._device.findData(str(preferred_device_id))
+                if didx >= 0:
+                    self._device.setCurrentIndex(didx)
+            self._reload_ports()
 
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
@@ -852,28 +1121,128 @@ class IpDialog(QDialog):
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
+
     def _reload_ports(self) -> None:
-        self._port.clear()
-        self._port.addItem("(не выбран)", None)
+        self._ports.clear()
         raw = self._device.currentData()
         if raw is None:
             return
         device_id = UUID(str(raw))
+        exclude = self._lag.id if self._lag is not None else None
         for port in inventory_service.ports_for_device(self._snapshot, device_id):
-            self._port.addItem(port.name, str(port.id))
+            other = inventory_service.lag_for_port(self._snapshot, port.id)
+            if other is not None and other.id != exclude:
+                continue
+            item = QListWidgetItem(port.name)
+            item.setData(Qt.ItemDataRole.UserRole, str(port.id))
+            self._ports.addItem(item)
 
-    def values(self) -> tuple[str, str, str, UUID | None]:
-        port_raw = self._port.currentData()
-        port_id = UUID(str(port_raw)) if port_raw is not None else None
+    def values(self):
+        from landesigner.domain.enums import LagMode
+
+        device_raw = self._device.currentData()
+        device_id = UUID(str(device_raw)) if device_raw is not None else None
+        mode = LagMode(str(self._mode.currentData()))
+        members: list[UUID] = []
+        for item in self._ports.selectedItems():
+            raw = item.data(Qt.ItemDataRole.UserRole)
+            if raw:
+                members.append(UUID(str(raw)))
         return (
-            self._address.text().strip(),
-            self._cidr.text().strip(),
-            self._gateway.text().strip(),
-            port_id,
+            device_id,
+            self._name.text().strip() or "bond0",
+            mode,
+            members,
+            self._notes.text().strip(),
         )
 
     def is_valid(self) -> bool:
-        return bool(self._address.text().strip())
+        device_id, _name, _mode, members, _notes = self.values()
+        return device_id is not None and len(members) >= 2
+
+
+class PortPropertiesDialog(QDialog):
+    """Имя, скорость и среда физического порта (создание или правка)."""
+
+    def __init__(
+        self,
+        snapshot: ProjectSnapshot,
+        port_id: UUID | None = None,
+        *,
+        device_id: UUID | None = None,
+        parent=None,
+    ) -> None:
+        super().__init__(parent)
+        self._creating = port_id is None
+        if self._creating:
+            if device_id is None:
+                raise ValueError("Нужен device_id для нового порта")
+            device = next((d for d in snapshot.devices if d.id == device_id), None)
+            host = device.hostname if device is not None else "устройство"
+            self.setWindowTitle(f"Добавить порт — {host}")
+            initial_name = "Mgmt"
+            initial_speed = 1000
+            initial_media = PortMedia.COPPER
+        else:
+            port = next((p for p in snapshot.ports if p.id == port_id), None)
+            if port is None:
+                raise ValueError("Порт не найден")
+            title = inventory_service.port_endpoint_label(snapshot, port_id)
+            self.setWindowTitle(f"Свойства порта — {title}")
+            initial_name = port.name
+            initial_speed = int(port.speed)
+            initial_media = port.media
+
+        layout = QVBoxLayout(self)
+        form = QFormLayout()
+        self._name = QLineEdit(initial_name, self)
+        self._speed = QComboBox(self)
+        self._speed.setEditable(True)
+        for speed in (100, 1000, 2500, 5000, 10000, 25000, 40000, 100000):
+            self._speed.addItem(f"{speed} Мбит/с", speed)
+        idx = self._speed.findData(initial_speed)
+        if idx >= 0:
+            self._speed.setCurrentIndex(idx)
+        else:
+            self._speed.setEditText(str(initial_speed))
+        self._media = QComboBox(self)
+        for media in PortMedia:
+            self._media.addItem(PORT_MEDIA_RU[media], media.value)
+        media_idx = self._media.findData(initial_media.value)
+        if media_idx >= 0:
+            self._media.setCurrentIndex(media_idx)
+        form.addRow("Имя", self._name)
+        form.addRow("Скорость", self._speed)
+        form.addRow("Среда", self._media)
+        hint = QLabel(
+            "Новый порт появится только на этом устройстве; "
+            "шаблон типа в каталоге не меняется."
+            if self._creating
+            else "Для combo-порта смените среду и при необходимости имя "
+            "(например Gi1/0/49 → SFP1/0/49).",
+            self,
+        )
+        hint.setWordWrap(True)
+        hint.setObjectName("HintLabel")
+        layout.addLayout(form)
+        layout.addWidget(hint)
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        _russian_buttons(buttons)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def values(self) -> tuple[str, int, PortMedia]:
+        data = self._speed.currentData()
+        if data is not None:
+            speed = int(data)
+        else:
+            text = self._speed.currentText().replace("Мбит/с", "").strip()
+            speed = int(text)
+        media = PortMedia(str(self._media.currentData()))
+        return self._name.text().strip(), speed, media
 
 
 class PortNetworkDialog(QDialog):
@@ -909,6 +1278,12 @@ class PortNetworkDialog(QDialog):
         for vlan in sorted(snapshot.vlans, key=lambda v: v.vlan_id):
             label = f"{vlan.vlan_id}" + (f" — {vlan.name}" if vlan.name else "")
             self._vlan.addItem(label, str(vlan.id))
+            if vlan.description:
+                self._vlan.setItemData(
+                    self._vlan.count() - 1,
+                    vlan.description,
+                    Qt.ItemDataRole.ToolTipRole,
+                )
         if port is not None and port.access_vlan_id is not None:
             idx = self._vlan.findData(str(port.access_vlan_id))
             if idx >= 0:
@@ -931,6 +1306,8 @@ class PortNetworkDialog(QDialog):
                 else Qt.CheckState.Unchecked
             )
             item.setData(Qt.ItemDataRole.UserRole, str(vlan.id))
+            if vlan.description:
+                item.setToolTip(vlan.description)
             self._tagged.addItem(item)
 
         existing = inventory_service.ips_for_port(snapshot, port_id)

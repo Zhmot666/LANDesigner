@@ -25,6 +25,7 @@ class EmptyPane(QFrame):
 
         sub_lbl = QLabel(subtitle, self)
         sub_lbl.setObjectName("EmptySubtitle")
+        sub_lbl.setProperty("muted", True)
         sub_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         sub_lbl.setWordWrap(True)
 

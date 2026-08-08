@@ -47,3 +47,9 @@ class DeviceRole(StrEnum):
     PATCH_PANEL = "PATCH_PANEL"
     OTHER = "OTHER"
 
+
+class LagMode(StrEnum):
+    ACTIVE_BACKUP = "ACTIVE_BACKUP"
+    LACP = "LACP"
+    STATIC = "STATIC"
+

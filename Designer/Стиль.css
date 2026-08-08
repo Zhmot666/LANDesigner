@@ -30,8 +30,9 @@ QPushButton {
     color: #23313a;
     border: 1px solid #c7d1d8;
     border-radius: 6px;
-    padding: 6px 12px;
-    min-height: 30px;
+    padding: 3px 10px;
+    min-height: 22px;
+    max-height: 26px;
 }
 
 QPushButton:hover {
@@ -83,8 +84,9 @@ QLineEdit, QComboBox, QSpinBox {
     color: #23313a;
     border: 1px solid #c7d1d8;
     border-radius: 6px;
-    padding: 5px 10px;
-    min-height: 30px;
+    padding: 2px 8px;
+    min-height: 22px;
+    max-height: 26px;
 }
 
 QLineEdit:focus, QComboBox:focus, QSpinBox:focus {

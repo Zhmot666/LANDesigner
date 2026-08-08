@@ -4,6 +4,7 @@ from landesigner.domain.enums import (
     CableCategory,
     CableKind,
     DeviceRole,
+    LagMode,
     PortMedia,
     PortMode,
     PortStatus,
@@ -17,6 +18,12 @@ DEVICE_ROLE_RU: dict[DeviceRole, str] = {
     DeviceRole.WORKSTATION: "Рабочая станция",
     DeviceRole.PATCH_PANEL: "Патч-панель",
     DeviceRole.OTHER: "Прочее",
+}
+
+LAG_MODE_RU: dict[LagMode, str] = {
+    LagMode.ACTIVE_BACKUP: "Active-Backup",
+    LagMode.LACP: "LACP",
+    LagMode.STATIC: "Static",
 }
 
 PORT_MEDIA_RU: dict[PortMedia, str] = {
@@ -77,3 +84,7 @@ def cable_kind_label(kind: CableKind) -> str:
 
 def cable_category_label(category: CableCategory) -> str:
     return CABLE_CATEGORY_RU.get(category, category.value)
+
+
+def lag_mode_label(mode: LagMode) -> str:
+    return LAG_MODE_RU.get(mode, mode.value)

@@ -16,6 +16,8 @@ venv/
 # Local LanDesigner projects / scratch
 *.lanproj
 *.lanproj.assets/
+*.lanproj.sync.json
+data/
 
 # IDE / OS
 .idea/

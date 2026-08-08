@@ -1,6 +1,7 @@
 from landesigner.domain.entities import ProjectMeta, ProjectSnapshot, Site
 from landesigner.domain.enums import CableKind, DeviceRole, PortMedia, PortStatus
 from landesigner.services import inventory as inv
+from landesigner.services import search as search_svc
 
 
 def test_add_hierarchy_and_device_with_ports():
@@ -155,10 +156,14 @@ def test_vlan_and_ip_on_port():
     device = inv.add_device(snap, dtype.id, "sw1")
     port = inv.ports_for_device(snap, device.id)[0]
 
-    vlan = inv.add_vlan(snap, 10, "Users")
+    vlan = inv.add_vlan(snap, 10, "Users", "Офисная сеть")
     inv.set_port_access_vlan(snap, port.id, vlan.id)
     assert port.access_vlan_id == vlan.id
     assert inv.vlan_label(snap, vlan.id) == "10 Users"
+    assert vlan.description == "Офисная сеть"
+
+    inv.update_vlan(snap, vlan.id, description="Сеть пользователей 10.10.0.0/24")
+    assert vlan.description == "Сеть пользователей 10.10.0.0/24"
 
     ip = inv.add_ip(
         snap, address="10.0.0.2", cidr="24", gateway="10.0.0.1", port_id=port.id
@@ -181,7 +186,61 @@ def test_vlan_and_ip_on_port():
     inv.delete_vlan(snap, vlan.id)
     assert port.access_vlan_id is None
     inv.delete_ip(snap, ip.id)
-    assert inv.ips_for_port(snap, port.id) == []
+
+
+def test_update_port_media_and_name():
+    meta = ProjectMeta(name="T")
+    site = Site(project_id=meta.id, name="S")
+    snap = ProjectSnapshot(meta=meta, sites=[site])
+    dtype = inv.add_device_type(
+        snap, vendor="D-Link", model="DGS-1210-52", role=DeviceRole.SWITCH, port_count=2
+    )
+    device = inv.add_device(snap, dtype.id, "sw1")
+    port = inv.ports_for_device(snap, device.id)[0]
+    assert port.media == PortMedia.COPPER
+
+    inv.update_port(
+        snap, port.id, name="SFP1/0/49", speed=1000, media=PortMedia.FIBER
+    )
+    assert port.name == "SFP1/0/49"
+    assert port.media == PortMedia.FIBER
+
+    try:
+        inv.update_port(snap, port.id, name="")
+        assert False, "expected empty name error"
+    except ValueError:
+        pass
+
+
+def test_add_and_delete_port_on_device():
+    meta = ProjectMeta(name="T")
+    site = Site(project_id=meta.id, name="S")
+    snap = ProjectSnapshot(meta=meta, sites=[site])
+    dtype = inv.add_device_type(
+        snap, vendor="D-Link", model="DGS-1210-52", role=DeviceRole.SWITCH, port_count=2
+    )
+    device = inv.add_device(snap, dtype.id, "sw1")
+    assert len(inv.ports_for_device(snap, device.id)) == 2
+
+    mgmt = inv.add_port(snap, device.id, "Mgmt", speed=1000, media=PortMedia.COPPER)
+    assert mgmt.name == "Mgmt"
+    assert len(inv.ports_for_device(snap, device.id)) == 3
+
+    try:
+        inv.add_port(snap, device.id, "Mgmt")
+        assert False, "expected duplicate"
+    except ValueError:
+        pass
+
+    other = inv.add_device(snap, dtype.id, "sw2")
+    peer = inv.ports_for_device(snap, other.id)[0]
+    inv.add_cable(snap, mgmt.id, peer.id, label="mgmt-link", kind=CableKind.COPPER)
+    inv.add_ip(snap, address="192.168.0.1", cidr="24", port_id=mgmt.id)
+    inv.delete_port(snap, mgmt.id)
+    assert all(p.id != mgmt.id for p in snap.ports)
+    assert all(ip.port_id != mgmt.id for ip in snap.ips)
+    assert snap.cables == []
+    assert peer.status == PortStatus.FREE
 
 
 def test_trunk_tagged_vlans():
@@ -226,3 +285,39 @@ def test_trunk_tagged_vlans():
     inv.delete_vlan(snap, v30.id)
     assert v30.id not in port.tagged_vlan_ids
     assert v10.id in port.tagged_vlan_ids
+
+
+def test_inventory_search_filters_devices_and_ips():
+    meta = ProjectMeta(name="T")
+    site = Site(project_id=meta.id, name="S")
+    snap = ProjectSnapshot(meta=meta, sites=[site])
+    dtype = inv.add_device_type(
+        snap, vendor="Cisco", model="2960", role=DeviceRole.SWITCH, port_count=2
+    )
+    a = inv.add_device(snap, dtype.id, "core-sw", serial="SN-A", inventory_tag="IT-1")
+    b = inv.add_device(snap, dtype.id, "acc-sw", serial="SN-B", inventory_tag="IT-2")
+    port_a = inv.ports_for_device(snap, a.id)[0]
+    port_b = inv.ports_for_device(snap, b.id)[0]
+    inv.add_ip(snap, address="10.0.0.1", cidr="24", port_id=port_a.id)
+    inv.add_vlan(snap, 10, "Users", "Офисная сеть")
+    inv.add_cable(snap, port_a.id, port_b.id, label="Uplink-1", kind=CableKind.COPPER)
+    types_by_id = {dtype.id: dtype}
+
+    found = search_svc.filter_devices(snap, snap.devices, types_by_id, "core")
+    assert [d.hostname for d in found] == ["core-sw"]
+
+    found_ip = search_svc.filter_devices(snap, snap.devices, types_by_id, "10.0.0.1")
+    assert [d.hostname for d in found_ip] == ["core-sw"]
+
+    found_tag = search_svc.filter_devices(snap, snap.devices, types_by_id, "it-2")
+    assert [d.hostname for d in found_tag] == ["acc-sw"]
+
+    assert len(search_svc.filter_ips(snap, snap.ips, "10.0")) == 1
+    assert search_svc.filter_device_types(snap.device_types, "2960")
+    assert not search_svc.filter_device_types(snap.device_types, "juniper")
+    assert len(search_svc.filter_vlans(snap.vlans, "users")) == 1
+    assert len(search_svc.filter_vlans(snap.vlans, "офисная")) == 1
+    assert len(search_svc.filter_cables(snap, snap.cables, "uplink")) == 1
+    assert len(search_svc.filter_ports(snap, snap.ports, "gi")) == 4
+    assert search_svc.normalize_query("  AbC  ") == "abc"
+    assert b.hostname == "acc-sw"

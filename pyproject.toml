@@ -10,9 +10,20 @@ dependencies = [
   "alembic>=1.13",
 ]
 
+[project.optional-dependencies]
+remote = [
+  "fastapi>=0.110",
+  "uvicorn>=0.27",
+  "httpx>=0.27",
+]
+dev = [
+  "pytest>=8.0",
+  "lan-designer[remote]",
+]
+
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["landesigner*"]
+include = ["landesigner*", "server*"]
 
 [tool.ruff]
 line-length = 100
@@ -25,4 +36,5 @@ quote-style = "double"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+pythonpath = ["."]
 
