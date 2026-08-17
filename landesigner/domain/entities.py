@@ -12,6 +12,7 @@ from landesigner.domain.enums import (
     LagMode,
     PortMedia,
     PortMode,
+    PortSide,
     PortStatus,
 )
 
@@ -97,6 +98,9 @@ class Device:
     role: DeviceRole = DeviceRole.OTHER
     room_id: Optional[UUID] = None
     rack_id: Optional[UUID] = None
+    rack_u: Optional[int] = None  # нижний юнит в шкафу
+    rack_u_height: int = 1  # высота в U
+    host_device_id: Optional[UUID] = None  # гипервизор для VIRTUAL_MACHINE
 
 
 @dataclass
@@ -108,6 +112,9 @@ class Port:
     media: PortMedia = PortMedia.COPPER
     status: PortStatus = PortStatus.FREE
     mode: PortMode = PortMode.ACCESS
+    mac: str = ""  # AA:BB:CC:DD:EE:FF, опционально
+    side: PortSide = PortSide.NONE
+    position: int = 0  # номер пары на патч-панели (1…N); 0 — обычный порт
     # Access VLAN (ACCESS) или native/untagged (TRUNK).
     access_vlan_id: Optional[UUID] = None
     tagged_vlan_ids: list[UUID] = field(default_factory=list)
@@ -156,6 +163,7 @@ class Lag:
     mode: LagMode = LagMode.ACTIVE_BACKUP
     member_port_ids: list[UUID] = field(default_factory=list)
     notes: str = ""
+    mac: str = ""  # MAC агрегата (часто у bond), опционально
 
 
 @dataclass

@@ -7,6 +7,7 @@ from landesigner.domain.enums import (
     LagMode,
     PortMedia,
     PortMode,
+    PortSide,
     PortStatus,
 )
 
@@ -15,6 +16,8 @@ DEVICE_ROLE_RU: dict[DeviceRole, str] = {
     DeviceRole.ROUTER: "Маршрутизатор",
     DeviceRole.AP: "Точка доступа",
     DeviceRole.SERVER: "Сервер",
+    DeviceRole.HYPERVISOR: "Гипервизор",
+    DeviceRole.VIRTUAL_MACHINE: "Виртуальный сервер",
     DeviceRole.WORKSTATION: "Рабочая станция",
     DeviceRole.PATCH_PANEL: "Патч-панель",
     DeviceRole.OTHER: "Прочее",
@@ -43,6 +46,12 @@ PORT_STATUS_RU: dict[PortStatus, str] = {
 PORT_MODE_RU: dict[PortMode, str] = {
     PortMode.ACCESS: "Access",
     PortMode.TRUNK: "Trunk",
+}
+
+PORT_SIDE_RU: dict[PortSide, str] = {
+    PortSide.NONE: "—",
+    PortSide.FRONT: "Front",
+    PortSide.REAR: "Rear",
 }
 
 CABLE_KIND_RU: dict[CableKind, str] = {
@@ -76,6 +85,10 @@ def status_label(status: PortStatus) -> str:
 
 def port_mode_label(mode: PortMode) -> str:
     return PORT_MODE_RU.get(mode, mode.value)
+
+
+def port_side_label(side: PortSide) -> str:
+    return PORT_SIDE_RU.get(side, side.value)
 
 
 def cable_kind_label(kind: CableKind) -> str:

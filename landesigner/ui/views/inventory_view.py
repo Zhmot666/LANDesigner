@@ -5,7 +5,6 @@ from uuid import UUID
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QBrush, QColor, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
-    QAbstractItemView,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -13,7 +12,6 @@ from PySide6.QtWidgets import (
     QSplitter,
     QTabWidget,
     QTableWidget,
-    QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
@@ -38,6 +36,15 @@ from landesigner.ui.labels import (
     role_label,
     status_label,
 )
+from landesigner.ui.table_utils import (
+    ip_sort_key,
+    mac_sort_key,
+    make_ip_item,
+    make_item,
+    select_row_by_id,
+    table_update,
+    tune_table,
+)
 from landesigner.ui.widgets.panel_card import PanelCard
 
 _ACCENT = QColor("#2f7c85")
@@ -53,21 +60,6 @@ _STATUS_DOT = {
     PortStatus.RESERVED: "●",
     PortStatus.DISABLED: "●",
 }
-
-
-def _tune_table(table: QTableWidget) -> None:
-    table.setAlternatingRowColors(True)
-    table.setShowGrid(False)
-    table.setWordWrap(False)
-    table.verticalHeader().setVisible(False)
-    table.verticalHeader().setDefaultSectionSize(28)
-    table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-    table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-    table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
-    table.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-    table.horizontalHeader().setStretchLastSection(True)
-    table.horizontalHeader().setHighlightSections(False)
-    table.setFrameShape(QTableWidget.Shape.NoFrame)
 
 
 def _primary_btn(text: str, parent: QWidget) -> QPushButton:
@@ -112,10 +104,18 @@ class InventoryView(QWidget):
         self._search.setPlaceholderText("Поиск по инвентарю…  (Ctrl+K)")
         self._search.setClearButtonEnabled(True)
         self._search.textChanged.connect(self._on_search_changed)
+        self._location_hint = QLabel("", self)
+        self._location_hint.setProperty("muted", True)
+        self._location_hint.setObjectName("PanelSubtitle")
+        self._btn_clear_location = QPushButton("Сбросить локацию", self)
+        self._btn_clear_location.setVisible(False)
+        self._btn_clear_location.clicked.connect(self.clear_location_filter)
         self._search_hint = QLabel("", self)
         self._search_hint.setProperty("muted", True)
         self._search_hint.setObjectName("PanelSubtitle")
         search_row.addWidget(self._search, stretch=1)
+        search_row.addWidget(self._location_hint)
+        search_row.addWidget(self._btn_clear_location)
         search_row.addWidget(self._search_hint)
         layout.addLayout(search_row)
 
@@ -143,10 +143,10 @@ class InventoryView(QWidget):
         devices_card.add_action(self._btn_edit)
         devices_card.add_action(self._btn_delete)
         self._table = QTableWidget(devices_card)
-        _tune_table(self._table)
-        self._table.setColumnCount(5)
+        tune_table(self._table)
+        self._table.setColumnCount(6)
         self._table.setHorizontalHeaderLabels(
-            ["Имя хоста", "Серийный №", "Инв. №", "Роль", "Тип"]
+            ["Имя хоста", "Серийный №", "Инв. №", "Роль", "Тип", "Хост"]
         )
         self._table.itemSelectionChanged.connect(self._on_selection_changed)
         self._table.itemDoubleClicked.connect(self._on_edit)
@@ -169,10 +169,10 @@ class InventoryView(QWidget):
         self._ports_card.add_action(self._btn_port_net)
         self._ports_card.add_action(self._btn_delete_port)
         self._ports = QTableWidget(self._ports_card)
-        _tune_table(self._ports)
-        self._ports.setColumnCount(7)
+        tune_table(self._ports)
+        self._ports.setColumnCount(9)
         self._ports.setHorizontalHeaderLabels(
-            ["Имя", "Скорость", "Среда", "Статус", "Связь", "VLAN", "IP"]
+            ["Имя", "Пара", "MAC", "Скорость", "Среда", "Статус", "Связь", "VLAN", "IP"]
         )
         self._ports.itemDoubleClicked.connect(self._on_edit_port_network)
         self._ports_card.set_body_widget(self._ports)
@@ -222,6 +222,8 @@ class InventoryView(QWidget):
         self._ips: list[IpAddress] = []
         self._lags = []
         self._query = ""
+        self._location_kind: str | None = None
+        self._location_id: UUID | None = None
 
     def attach_device_card(self, card: QWidget) -> None:
         """Поместить карточку устройства в нижний правый слот."""
@@ -254,6 +256,43 @@ class InventoryView(QWidget):
         self._query = text
         self._refresh_tables(preserve_selection=True)
 
+    def set_location_filter(self, kind: str | None, location_id: UUID | None) -> None:
+        self._location_kind = kind
+        self._location_id = location_id
+        self._update_location_hint()
+        self._refresh_tables(preserve_selection=True)
+
+    def clear_location_filter(self) -> None:
+        self.set_location_filter(None, None)
+
+    def _update_location_hint(self) -> None:
+        snapshot = self._snapshot
+        if (
+            not self._location_kind
+            or self._location_id is None
+            or snapshot is None
+        ):
+            self._location_hint.setText("")
+            self._btn_clear_location.setVisible(False)
+            return
+        kind = self._location_kind
+        lid = self._location_id
+        label = "локация"
+        if kind == "building":
+            b = next((x for x in snapshot.buildings if x.id == lid), None)
+            label = f"здание «{b.name}»" if b else "здание"
+        elif kind == "floor":
+            f = next((x for x in snapshot.floors if x.id == lid), None)
+            label = f"этаж «{f.name}»" if f else "этаж"
+        elif kind == "room":
+            r = next((x for x in snapshot.rooms if x.id == lid), None)
+            label = f"комната «{r.name}»" if r else "комната"
+        elif kind == "rack":
+            rk = next((x for x in snapshot.racks if x.id == lid), None)
+            label = f"шкаф «{rk.name}»" if rk else "шкаф"
+        self._location_hint.setText(f"фильтр: {label}")
+        self._btn_clear_location.setVisible(True)
+
     def _build_cables_tab(self, parent: QWidget) -> QWidget:
         panel = QWidget(parent)
         layout = QVBoxLayout(panel)
@@ -274,7 +313,7 @@ class InventoryView(QWidget):
         header.addWidget(self._btn_delete_cable)
         layout.addLayout(header)
         self._cables_table = QTableWidget(panel)
-        _tune_table(self._cables_table)
+        tune_table(self._cables_table)
         self._cables_table.setColumnCount(6)
         self._cables_table.setHorizontalHeaderLabels(
             ["Метка", "Вид", "Категория", "Длина", "Конец A", "Конец B"]
@@ -303,7 +342,7 @@ class InventoryView(QWidget):
         header.addWidget(self._btn_delete_vlan)
         layout.addLayout(header)
         self._vlans_table = QTableWidget(panel)
-        _tune_table(self._vlans_table)
+        tune_table(self._vlans_table)
         self._vlans_table.setColumnCount(3)
         self._vlans_table.setHorizontalHeaderLabels(["VLAN ID", "Имя", "Описание"])
         self._vlans_table.itemDoubleClicked.connect(self._on_edit_vlan)
@@ -330,7 +369,7 @@ class InventoryView(QWidget):
         header.addWidget(self._btn_delete_ip)
         layout.addLayout(header)
         self._ips_table = QTableWidget(panel)
-        _tune_table(self._ips_table)
+        tune_table(self._ips_table)
         self._ips_table.setColumnCount(4)
         self._ips_table.setHorizontalHeaderLabels(["Адрес", "Префикс", "Шлюз", "Привязка"])
         self._ips_table.itemDoubleClicked.connect(self._on_edit_ip)
@@ -357,10 +396,10 @@ class InventoryView(QWidget):
         header.addWidget(self._btn_delete_lag)
         layout.addLayout(header)
         self._lags_table = QTableWidget(panel)
-        _tune_table(self._lags_table)
-        self._lags_table.setColumnCount(5)
+        tune_table(self._lags_table)
+        self._lags_table.setColumnCount(6)
         self._lags_table.setHorizontalHeaderLabels(
-            ["Имя", "Устройство", "Режим", "Порты", "IP"]
+            ["Имя", "Устройство", "Режим", "MAC", "Порты", "IP"]
         )
         self._lags_table.itemDoubleClicked.connect(self._on_edit_lag)
         layout.addWidget(self._lags_table)
@@ -403,97 +442,113 @@ class InventoryView(QWidget):
         query = self._query
 
         if snapshot is None:
-            self._table.setRowCount(0)
-            self._ports.setRowCount(0)
-            self._cables_table.setRowCount(0)
-            self._vlans_table.setRowCount(0)
-            self._ips_table.setRowCount(0)
-            self._lags_table.setRowCount(0)
+            with table_update(self._table):
+                self._table.setRowCount(0)
+            with table_update(self._ports):
+                self._ports.setRowCount(0)
+            with table_update(self._cables_table):
+                self._cables_table.setRowCount(0)
+            with table_update(self._vlans_table):
+                self._vlans_table.setRowCount(0)
+            with table_update(self._ips_table):
+                self._ips_table.setRowCount(0)
+            with table_update(self._lags_table):
+                self._lags_table.setRowCount(0)
             self._ports_card.set_subtitle("Выберите устройство")
             self._search_hint.setText("")
             return
 
+        scoped_devices = self._devices
+        if self._location_kind and self._location_id is not None:
+            scoped_devices = inventory_service.devices_for_location(
+                snapshot, self._location_kind, self._location_id
+            )
         devices = search_service.filter_devices(
-            snapshot, self._devices, self._types_by_id, query
+            snapshot, scoped_devices, self._types_by_id, query
         )
         cables = search_service.filter_cables(snapshot, self._cables, query)
         vlans = search_service.filter_vlans(self._vlans, query)
         ips = search_service.filter_ips(snapshot, self._ips, query)
 
-        self._table.setRowCount(len(devices))
-        restore_row = None
-        accent = QBrush(_ACCENT)
-        for row_idx, d in enumerate(devices):
-            dt = self._types_by_id.get(d.device_type_id)
-            type_label = f"{dt.vendor} {dt.model}" if dt else str(d.device_type_id)
-            host_item = QTableWidgetItem(d.hostname)
-            host_item.setForeground(accent)
-            host_item.setData(Qt.ItemDataRole.UserRole, str(d.id))
-            self._table.setItem(row_idx, 0, host_item)
-            self._table.setItem(row_idx, 1, QTableWidgetItem(d.serial))
-            self._table.setItem(row_idx, 2, QTableWidgetItem(d.inventory_tag))
-            self._table.setItem(row_idx, 3, QTableWidgetItem(role_label(d.role)))
-            self._table.setItem(row_idx, 4, QTableWidgetItem(type_label))
-            if selected_device is not None and d.id == selected_device:
-                restore_row = row_idx
+        with table_update(self._table):
+            self._table.setRowCount(len(devices))
+            accent = QBrush(_ACCENT)
+            for row_idx, d in enumerate(devices):
+                dt = self._types_by_id.get(d.device_type_id)
+                type_label = f"{dt.vendor} {dt.model}" if dt else str(d.device_type_id)
+                host_item = make_item(d.hostname, entity_id=d.id)
+                host_item.setForeground(accent)
+                self._table.setItem(row_idx, 0, host_item)
+                self._table.setItem(row_idx, 1, make_item(d.serial))
+                self._table.setItem(row_idx, 2, make_item(d.inventory_tag))
+                self._table.setItem(row_idx, 3, make_item(role_label(d.role)))
+                self._table.setItem(row_idx, 4, make_item(type_label))
+                host = inventory_service.host_for_device(snapshot, d)
+                host_txt = host.hostname if host is not None else "—"
+                self._table.setItem(row_idx, 5, make_item(host_txt))
 
-        self._cables_table.setRowCount(len(cables))
-        restore_cable_row = None
-        for row_idx, cable in enumerate(cables):
-            length = f"{cable.length_m:g} м" if cable.length_m is not None else "—"
-            self._cables_table.setItem(row_idx, 0, QTableWidgetItem(cable.label or "—"))
-            self._cables_table.setItem(row_idx, 1, QTableWidgetItem(cable_kind_label(cable.kind)))
-            self._cables_table.setItem(
-                row_idx, 2, QTableWidgetItem(cable_category_label(cable.category))
-            )
-            self._cables_table.setItem(row_idx, 3, QTableWidgetItem(length))
-            self._cables_table.setItem(
-                row_idx,
-                4,
-                QTableWidgetItem(
-                    inventory_service.port_endpoint_label(snapshot, cable.end_a_port_id)
-                ),
-            )
-            self._cables_table.setItem(
-                row_idx,
-                5,
-                QTableWidgetItem(
-                    inventory_service.port_endpoint_label(snapshot, cable.end_b_port_id)
-                ),
-            )
-            self._cables_table.item(row_idx, 0).setData(
-                Qt.ItemDataRole.UserRole, str(cable.id)
-            )
-            if selected_cable is not None and cable.id == selected_cable:
-                restore_cable_row = row_idx
+        with table_update(self._cables_table):
+            self._cables_table.setRowCount(len(cables))
+            for row_idx, cable in enumerate(cables):
+                length = f"{cable.length_m:g} м" if cable.length_m is not None else "—"
+                length_key = cable.length_m if cable.length_m is not None else -1.0
+                self._cables_table.setItem(
+                    row_idx, 0, make_item(cable.label or "—", entity_id=cable.id)
+                )
+                self._cables_table.setItem(
+                    row_idx, 1, make_item(cable_kind_label(cable.kind))
+                )
+                self._cables_table.setItem(
+                    row_idx, 2, make_item(cable_category_label(cable.category))
+                )
+                self._cables_table.setItem(
+                    row_idx, 3, make_item(length, sort_key=length_key)
+                )
+                self._cables_table.setItem(
+                    row_idx,
+                    4,
+                    make_item(
+                        inventory_service.port_endpoint_label(snapshot, cable.end_a_port_id)
+                    ),
+                )
+                self._cables_table.setItem(
+                    row_idx,
+                    5,
+                    make_item(
+                        inventory_service.port_endpoint_label(snapshot, cable.end_b_port_id)
+                    ),
+                )
 
-        self._vlans_table.setRowCount(len(vlans))
-        restore_vlan_row = None
-        for row_idx, vlan in enumerate(vlans):
-            self._vlans_table.setItem(row_idx, 0, QTableWidgetItem(str(vlan.vlan_id)))
-            self._vlans_table.setItem(row_idx, 1, QTableWidgetItem(vlan.name))
-            self._vlans_table.setItem(row_idx, 2, QTableWidgetItem(vlan.description))
-            self._vlans_table.item(row_idx, 0).setData(Qt.ItemDataRole.UserRole, str(vlan.id))
-            if selected_vlan is not None and vlan.id == selected_vlan:
-                restore_vlan_row = row_idx
+        with table_update(self._vlans_table):
+            self._vlans_table.setRowCount(len(vlans))
+            for row_idx, vlan in enumerate(vlans):
+                self._vlans_table.setItem(
+                    row_idx,
+                    0,
+                    make_item(str(vlan.vlan_id), sort_key=vlan.vlan_id, entity_id=vlan.id),
+                )
+                self._vlans_table.setItem(row_idx, 1, make_item(vlan.name))
+                self._vlans_table.setItem(row_idx, 2, make_item(vlan.description))
 
-        self._ips_table.setRowCount(len(ips))
-        restore_ip_row = None
-        for row_idx, ip in enumerate(ips):
-            if ip.lag_id is not None:
-                lag = next((item for item in snapshot.lags if item.id == ip.lag_id), None)
-                bind_txt = f"LAG {lag.name}" if lag else "LAG"
-            elif ip.port_id is not None:
-                bind_txt = inventory_service.port_endpoint_label(snapshot, ip.port_id)
-            else:
-                bind_txt = "—"
-            self._ips_table.setItem(row_idx, 0, QTableWidgetItem(ip.address))
-            self._ips_table.setItem(row_idx, 1, QTableWidgetItem(ip.cidr or "—"))
-            self._ips_table.setItem(row_idx, 2, QTableWidgetItem(ip.gateway or "—"))
-            self._ips_table.setItem(row_idx, 3, QTableWidgetItem(bind_txt))
-            self._ips_table.item(row_idx, 0).setData(Qt.ItemDataRole.UserRole, str(ip.id))
-            if selected_ip is not None and ip.id == selected_ip:
-                restore_ip_row = row_idx
+        with table_update(self._ips_table):
+            self._ips_table.setRowCount(len(ips))
+            for row_idx, ip in enumerate(ips):
+                if ip.lag_id is not None:
+                    lag = next((item for item in snapshot.lags if item.id == ip.lag_id), None)
+                    bind_txt = f"LAG {lag.name}" if lag else "LAG"
+                elif ip.port_id is not None:
+                    bind_txt = inventory_service.port_endpoint_label(snapshot, ip.port_id)
+                else:
+                    bind_txt = "—"
+                cidr_key = int(ip.cidr) if ip.cidr.isdigit() else -1
+                self._ips_table.setItem(
+                    row_idx, 0, make_ip_item(ip.address, entity_id=ip.id)
+                )
+                self._ips_table.setItem(
+                    row_idx, 1, make_item(ip.cidr or "—", sort_key=cidr_key)
+                )
+                self._ips_table.setItem(row_idx, 2, make_ip_item(ip.gateway or "—"))
+                self._ips_table.setItem(row_idx, 3, make_item(bind_txt))
 
         lags = list(self._lags)
         if search_service.normalize_query(query):
@@ -508,25 +563,33 @@ class InventoryView(QWidget):
                     if d.id == lag.device_id
                 )
             ]
-        self._lags_table.setRowCount(len(lags))
-        restore_lag_row = None
-        for row_idx, lag in enumerate(lags):
-            device = next((d for d in snapshot.devices if d.id == lag.device_id), None)
-            host = device.hostname if device else "—"
-            ips_txt = ", ".join(
-                inventory_service.ip_label(ip)
-                for ip in inventory_service.ips_for_lag(snapshot, lag.id)
-            ) or "—"
-            self._lags_table.setItem(row_idx, 0, QTableWidgetItem(lag.name))
-            self._lags_table.setItem(row_idx, 1, QTableWidgetItem(host))
-            self._lags_table.setItem(row_idx, 2, QTableWidgetItem(lag_mode_label(lag.mode)))
-            self._lags_table.setItem(
-                row_idx, 3, QTableWidgetItem(inventory_service.lag_member_labels(snapshot, lag))
-            )
-            self._lags_table.setItem(row_idx, 4, QTableWidgetItem(ips_txt))
-            self._lags_table.item(row_idx, 0).setData(Qt.ItemDataRole.UserRole, str(lag.id))
-            if selected_lag is not None and lag.id == selected_lag:
-                restore_lag_row = row_idx
+        with table_update(self._lags_table):
+            self._lags_table.setRowCount(len(lags))
+            for row_idx, lag in enumerate(lags):
+                device = next((d for d in snapshot.devices if d.id == lag.device_id), None)
+                host = device.hostname if device else "—"
+                ips_txt = ", ".join(
+                    inventory_service.ip_label(ip)
+                    for ip in inventory_service.ips_for_lag(snapshot, lag.id)
+                ) or "—"
+                self._lags_table.setItem(
+                    row_idx, 0, make_item(lag.name, entity_id=lag.id)
+                )
+                self._lags_table.setItem(row_idx, 1, make_item(host))
+                self._lags_table.setItem(
+                    row_idx, 2, make_item(lag_mode_label(lag.mode))
+                )
+                self._lags_table.setItem(
+                    row_idx,
+                    3,
+                    make_item(lag.mac or "—", sort_key=mac_sort_key(lag.mac)),
+                )
+                self._lags_table.setItem(
+                    row_idx,
+                    4,
+                    make_item(inventory_service.lag_member_labels(snapshot, lag)),
+                )
+                self._lags_table.setItem(row_idx, 5, make_item(ips_txt))
 
         if search_service.normalize_query(query):
             self._search_hint.setText(
@@ -536,28 +599,27 @@ class InventoryView(QWidget):
         else:
             self._search_hint.setText("")
 
-        if restore_row is not None:
-            self._table.selectRow(restore_row)
+        if select_row_by_id(self._table, selected_device):
             self._fill_ports(selected_device, preferred_port_id=selected_port)
         elif devices:
             # При активном поиске показываем первое совпадение
             if search_service.normalize_query(query):
                 self._table.selectRow(0)
             else:
-                self._ports.setRowCount(0)
+                with table_update(self._ports):
+                    self._ports.setRowCount(0)
                 self._ports_card.set_subtitle("Выберите устройство")
         else:
-            self._ports.setRowCount(0)
-            self._ports_card.set_subtitle("Нет совпадений" if query else "Выберите устройство")
+            with table_update(self._ports):
+                self._ports.setRowCount(0)
+            self._ports_card.set_subtitle(
+                "Нет совпадений" if query else "Выберите устройство"
+            )
 
-        if restore_cable_row is not None:
-            self._cables_table.selectRow(restore_cable_row)
-        if restore_vlan_row is not None:
-            self._vlans_table.selectRow(restore_vlan_row)
-        if restore_ip_row is not None:
-            self._ips_table.selectRow(restore_ip_row)
-        if restore_lag_row is not None:
-            self._lags_table.selectRow(restore_lag_row)
+        select_row_by_id(self._cables_table, selected_cable)
+        select_row_by_id(self._vlans_table, selected_vlan)
+        select_row_by_id(self._ips_table, selected_ip)
+        select_row_by_id(self._lags_table, selected_lag)
 
     def selected_device_id(self) -> UUID | None:
         return self._selected_id(self._table)
@@ -605,55 +667,79 @@ class InventoryView(QWidget):
         else:
             self._ports_card.set_subtitle("Выберите устройство")
 
-        restore_port_row = None
-        self._ports.setRowCount(len(ports))
-        for row_idx, p in enumerate(ports):
-            peer = inventory_service.peer_port(snapshot, p.id) if snapshot else None
-            if peer is not None and snapshot is not None:
-                link = inventory_service.port_endpoint_label(snapshot, peer.id)
-            else:
-                link = "—"
-            vlan_txt = (
-                inventory_service.port_vlan_summary(snapshot, p) if snapshot else "—"
-            )
-            ips = inventory_service.ips_for_port(snapshot, p.id) if snapshot else []
-            ip_parts = [inventory_service.ip_label(ip) for ip in ips]
-            lag = inventory_service.lag_for_port(snapshot, p.id) if snapshot else None
-            if lag is not None and snapshot is not None:
-                lag_ips = inventory_service.ips_for_lag(snapshot, lag.id)
-                if lag_ips:
-                    ip_parts.append(
-                        f"{lag.name}: "
-                        + ", ".join(inventory_service.ip_label(ip) for ip in lag_ips)
-                    )
+        with table_update(self._ports):
+            self._ports.setRowCount(len(ports))
+            for row_idx, p in enumerate(ports):
+                peer = inventory_service.peer_port(snapshot, p.id) if snapshot else None
+                if peer is not None and snapshot is not None:
+                    link = inventory_service.port_endpoint_label(snapshot, peer.id)
                 else:
-                    ip_parts.append(lag.name)
-            ip_txt = ", ".join(ip_parts) if ip_parts else "—"
-            name_item = QTableWidgetItem(p.name)
-            if lag is not None:
-                name_item.setToolTip(f"Член LAG «{lag.name}»")
-            status_item = QTableWidgetItem(
-                f"{_STATUS_DOT.get(p.status, '●')} {status_label(p.status)}"
-            )
-            status_item.setForeground(
-                QBrush(_STATUS_COLOR.get(p.status, QColor("#23313a")))
-            )
-            self._ports.setItem(row_idx, 0, name_item)
-            self._ports.setItem(row_idx, 1, QTableWidgetItem(f"{p.speed} Мбит/с"))
-            self._ports.setItem(row_idx, 2, QTableWidgetItem(media_label(p.media)))
-            self._ports.setItem(row_idx, 3, status_item)
-            self._ports.setItem(row_idx, 4, QTableWidgetItem(link))
-            self._ports.setItem(row_idx, 5, QTableWidgetItem(vlan_txt))
-            ip_item = QTableWidgetItem(ip_txt)
-            if lag is not None:
-                ip_item.setForeground(QBrush(_ACCENT))
-                ip_item.setToolTip(f"IP на LAG «{lag.name}»" if ":" in ip_txt else f"LAG «{lag.name}»")
-            self._ports.setItem(row_idx, 6, ip_item)
-            self._ports.item(row_idx, 0).setData(Qt.ItemDataRole.UserRole, str(p.id))
-            if preferred_port_id is not None and p.id == preferred_port_id:
-                restore_port_row = row_idx
-        if restore_port_row is not None:
-            self._ports.selectRow(restore_port_row)
+                    link = "—"
+                vlan_txt = (
+                    inventory_service.port_vlan_summary(snapshot, p) if snapshot else "—"
+                )
+                ips = inventory_service.ips_for_port(snapshot, p.id) if snapshot else []
+                ip_parts = [inventory_service.ip_label(ip) for ip in ips]
+                lag = inventory_service.lag_for_port(snapshot, p.id) if snapshot else None
+                if lag is not None and snapshot is not None:
+                    lag_ips = inventory_service.ips_for_lag(snapshot, lag.id)
+                    if lag_ips:
+                        ip_parts.append(
+                            f"{lag.name}: "
+                            + ", ".join(inventory_service.ip_label(ip) for ip in lag_ips)
+                        )
+                    else:
+                        ip_parts.append(lag.name)
+                ip_txt = ", ".join(ip_parts) if ip_parts else "—"
+                name_item = make_item(p.name, entity_id=p.id)
+                if lag is not None:
+                    name_item.setToolTip(f"Член LAG «{lag.name}»")
+                pair = (
+                    inventory_service.paired_port(snapshot, p) if snapshot is not None else None
+                )
+                if pair is not None:
+                    pair_txt = f"→ {pair.name}"
+                    pair_tip = f"Сквозная пара: {p.name} ↔ {pair.name}"
+                else:
+                    pair_txt = "—"
+                    pair_tip = ""
+                pair_item = make_item(pair_txt)
+                if pair_tip:
+                    pair_item.setToolTip(pair_tip)
+                    name_item.setToolTip(
+                        (name_item.toolTip() + "\n" if name_item.toolTip() else "")
+                        + pair_tip
+                    )
+                status_item = make_item(
+                    f"{_STATUS_DOT.get(p.status, '●')} {status_label(p.status)}",
+                    sort_key=p.status.value,
+                )
+                status_item.setForeground(
+                    QBrush(_STATUS_COLOR.get(p.status, QColor("#23313a")))
+                )
+                self._ports.setItem(row_idx, 0, name_item)
+                self._ports.setItem(row_idx, 1, pair_item)
+                self._ports.setItem(
+                    row_idx,
+                    2,
+                    make_item(p.mac or "—", sort_key=mac_sort_key(p.mac)),
+                )
+                self._ports.setItem(
+                    row_idx, 3, make_item(f"{p.speed} Мбит/с", sort_key=int(p.speed))
+                )
+                self._ports.setItem(row_idx, 4, make_item(media_label(p.media)))
+                self._ports.setItem(row_idx, 5, status_item)
+                self._ports.setItem(row_idx, 6, make_item(link))
+                self._ports.setItem(row_idx, 7, make_item(vlan_txt))
+                ip_item = make_item(ip_txt, sort_key=ip_sort_key(ip_parts[0] if ip_parts else ""))
+                if lag is not None:
+                    ip_item.setForeground(QBrush(_ACCENT))
+                    ip_item.setToolTip(
+                        f"IP на LAG «{lag.name}»" if ":" in ip_txt else f"LAG «{lag.name}»"
+                    )
+                self._ports.setItem(row_idx, 8, ip_item)
+
+        select_row_by_id(self._ports, preferred_port_id)
 
     def _on_selection_changed(self) -> None:
         device_id = self.selected_device_id()

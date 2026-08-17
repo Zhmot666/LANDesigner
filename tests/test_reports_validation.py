@@ -102,7 +102,7 @@ def test_reports_devices_ports_cables_vlans():
 
     ports = reports_svc.build_report(snap, ReportKind.PORTS)
     assert len(ports.rows) == 4
-    assert any("10.0.0.2" in row[7] for row in ports.rows)
+    assert any("10.0.0.2" in row[8] for row in ports.rows)
 
     cables = reports_svc.build_report(snap, ReportKind.CABLES)
     assert cables.rows[0][0] == "Uplink"
@@ -123,7 +123,48 @@ def test_reports_devices_ports_cables_vlans():
 def test_issue_code_labels_russian():
     assert validation_svc.issue_code_label("cable_no_label") == "Кабель без метки"
     assert validation_svc.issue_code_label("duplicate_ip") == "Дублирующий IP"
+    assert validation_svc.issue_code_label("vm_missing_host") == "ВМ без гипервизора"
     issue = validation_svc.ValidationIssue(
         IssueSeverity.WARNING, "cable_no_label", "msg"
     )
     assert issue.code_label == "Кабель без метки"
+
+
+def test_validation_virtual_machines():
+    snap = _base_snap()
+    hv_type = inv.add_device_type(
+        snap, vendor="VMware", model="ESXi", role=DeviceRole.HYPERVISOR, port_count=1
+    )
+    vm_type = inv.add_device_type(
+        snap, vendor="Generic", model="VM", role=DeviceRole.VIRTUAL_MACHINE, port_count=1
+    )
+    sw_type = inv.add_device_type(
+        snap, vendor="X", model="Y", role=DeviceRole.SWITCH, port_count=1
+    )
+    host = inv.add_device(snap, hv_type.id, "esxi-1")
+    vm = inv.add_device(snap, vm_type.id, "vm-1", host_device_id=host.id)
+    switch = inv.add_device(snap, sw_type.id, "sw1")
+
+    # Битые данные: ВМ без хоста, не-ВМ с host_device_id, ВМ в шкафу.
+    vm.host_device_id = None
+    switch.host_device_id = host.id
+    from landesigner.domain.entities import Rack, Room
+    from uuid import uuid4
+
+    room = Room(id=uuid4(), floor_id=uuid4(), name="R")
+    rack = Rack(id=uuid4(), room_id=room.id, name="K")
+    snap.rooms.append(room)
+    snap.racks.append(rack)
+    vm.rack_id = rack.id
+
+    issues = validation_svc.validate_project(snap)
+    codes = {i.code for i in issues}
+    assert "vm_missing_host" in codes
+    assert "host_on_non_vm" in codes
+    assert "vm_in_rack" in codes
+
+    vm.host_device_id = switch.id
+    vm.rack_id = None
+    switch.host_device_id = None
+    issues2 = validation_svc.validate_project(snap)
+    assert any(i.code == "vm_invalid_host" for i in issues2)

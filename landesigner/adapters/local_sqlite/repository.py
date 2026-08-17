@@ -32,6 +32,7 @@ from landesigner.domain.enums import (
     LagMode,
     PortMedia,
     PortMode,
+    PortSide,
     PortStatus,
 )
 from landesigner.ports.repository import ProjectRepository
@@ -172,10 +173,14 @@ class LocalSqliteRepository(ProjectRepository):
                 role TEXT NOT NULL,
                 room_id TEXT,
                 rack_id TEXT,
+                rack_u INTEGER,
+                rack_u_height INTEGER NOT NULL DEFAULT 1,
+                host_device_id TEXT,
                 FOREIGN KEY(site_id) REFERENCES site(id) ON DELETE CASCADE,
                 FOREIGN KEY(device_type_id) REFERENCES device_type(id) ON DELETE CASCADE,
                 FOREIGN KEY(room_id) REFERENCES room(id) ON DELETE SET NULL,
-                FOREIGN KEY(rack_id) REFERENCES rack(id) ON DELETE SET NULL
+                FOREIGN KEY(rack_id) REFERENCES rack(id) ON DELETE SET NULL,
+                FOREIGN KEY(host_device_id) REFERENCES device(id) ON DELETE SET NULL
             )
             """
         )
@@ -191,6 +196,9 @@ class LocalSqliteRepository(ProjectRepository):
                 status TEXT NOT NULL,
                 mode TEXT NOT NULL DEFAULT 'ACCESS',
                 access_vlan_id TEXT,
+                mac TEXT NOT NULL DEFAULT '',
+                side TEXT NOT NULL DEFAULT 'NONE',
+                position INTEGER NOT NULL DEFAULT 0,
                 FOREIGN KEY(device_id) REFERENCES device(id) ON DELETE CASCADE
             )
             """
@@ -251,6 +259,7 @@ class LocalSqliteRepository(ProjectRepository):
                 name TEXT NOT NULL DEFAULT 'bond0',
                 mode TEXT NOT NULL DEFAULT 'ACTIVE_BACKUP',
                 notes TEXT NOT NULL DEFAULT '',
+                mac TEXT NOT NULL DEFAULT '',
                 FOREIGN KEY(site_id) REFERENCES site(id) ON DELETE CASCADE,
                 FOREIGN KEY(device_id) REFERENCES device(id) ON DELETE CASCADE
             )
@@ -329,10 +338,17 @@ class LocalSqliteRepository(ProjectRepository):
 
         self._ensure_column(con, "port", "access_vlan_id", "TEXT")
         self._ensure_column(con, "port", "mode", "TEXT NOT NULL DEFAULT 'ACCESS'")
+        self._ensure_column(con, "port", "mac", "TEXT NOT NULL DEFAULT ''")
+        self._ensure_column(con, "port", "side", "TEXT NOT NULL DEFAULT 'NONE'")
+        self._ensure_column(con, "port", "position", "INTEGER NOT NULL DEFAULT 0")
         self._ensure_column(con, "building", "address", "TEXT NOT NULL DEFAULT ''")
         self._ensure_column(con, "building", "notes", "TEXT NOT NULL DEFAULT ''")
         self._ensure_column(con, "ip_address", "lag_id", "TEXT")
         self._ensure_column(con, "vlan", "description", "TEXT NOT NULL DEFAULT ''")
+        self._ensure_column(con, "lag", "mac", "TEXT NOT NULL DEFAULT ''")
+        self._ensure_column(con, "device", "rack_u", "INTEGER")
+        self._ensure_column(con, "device", "rack_u_height", "INTEGER NOT NULL DEFAULT 1")
+        self._ensure_column(con, "device", "host_device_id", "TEXT")
         con.commit()
 
     def _ensure_column(
@@ -567,7 +583,8 @@ class LocalSqliteRepository(ProjectRepository):
 
             device_rows = con.execute(
                 f"""
-                SELECT id, site_id, device_type_id, hostname, serial, inventory_tag, role, room_id, rack_id
+                SELECT id, site_id, device_type_id, hostname, serial, inventory_tag, role,
+                       room_id, rack_id, rack_u, rack_u_height, host_device_id
                 FROM device
                 WHERE site_id IN ({placeholders_sites})
                 """,
@@ -584,6 +601,11 @@ class LocalSqliteRepository(ProjectRepository):
                     role=DeviceRole(r[6]),
                     room_id=UUID(r[7]) if r[7] is not None else None,
                     rack_id=UUID(r[8]) if r[8] is not None else None,
+                    rack_u=int(r[9]) if len(r) > 9 and r[9] is not None else None,
+                    rack_u_height=int(r[10]) if len(r) > 10 and r[10] is not None else 1,
+                    host_device_id=(
+                        UUID(r[11]) if len(r) > 11 and r[11] is not None else None
+                    ),
                 )
                 for r in device_rows
             ]
@@ -594,7 +616,8 @@ class LocalSqliteRepository(ProjectRepository):
                 placeholders_devices = _in_placeholders(device_ids)
                 ports_rows = con.execute(
                     f"""
-                    SELECT id, device_id, name, speed, media, status, access_vlan_id, mode
+                    SELECT id, device_id, name, speed, media, status, access_vlan_id, mode,
+                           mac, side, position
                     FROM port
                     WHERE device_id IN ({placeholders_devices})
                     """,
@@ -610,6 +633,13 @@ class LocalSqliteRepository(ProjectRepository):
                         status=PortStatus(r[5]),
                         access_vlan_id=UUID(r[6]) if r[6] is not None else None,
                         mode=PortMode(r[7] or PortMode.ACCESS.value),
+                        mac=(r[8] or "") if len(r) > 8 else "",
+                        side=(
+                            PortSide(r[9])
+                            if len(r) > 9 and r[9] in {s.value for s in PortSide}
+                            else PortSide.NONE
+                        ),
+                        position=int(r[10]) if len(r) > 10 and r[10] is not None else 0,
                     )
                     for r in ports_rows
                 ]
@@ -697,7 +727,7 @@ class LocalSqliteRepository(ProjectRepository):
             try:
                 lag_rows = con.execute(
                     f"""
-                    SELECT id, site_id, device_id, name, mode, notes
+                    SELECT id, site_id, device_id, name, mode, notes, mac
                     FROM lag
                     WHERE site_id IN ({placeholders_sites})
                     """,
@@ -729,6 +759,7 @@ class LocalSqliteRepository(ProjectRepository):
                             else LagMode.ACTIVE_BACKUP
                         ),
                         notes=r[5] or "",
+                        mac=(r[6] or "") if len(r) > 6 else "",
                         member_port_ids=member_map.get(str(r[0]), []),
                     )
                     for r in lag_rows
@@ -964,9 +995,10 @@ class LocalSqliteRepository(ProjectRepository):
                 con.execute(
                     """
                     INSERT INTO device(
-                        id, site_id, device_type_id, hostname, serial, inventory_tag, role, room_id, rack_id
+                        id, site_id, device_type_id, hostname, serial, inventory_tag, role,
+                        room_id, rack_id, rack_u, rack_u_height, host_device_id
                     )
-                    VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         _uuid_str(d.id),
@@ -978,6 +1010,13 @@ class LocalSqliteRepository(ProjectRepository):
                         _enum_value(d.role),
                         _uuid_str(d.room_id) if d.room_id is not None else None,
                         _uuid_str(d.rack_id) if d.rack_id is not None else None,
+                        int(d.rack_u) if d.rack_u is not None else None,
+                        int(d.rack_u_height or 1),
+                        (
+                            _uuid_str(d.host_device_id)
+                            if d.host_device_id is not None
+                            else None
+                        ),
                     ),
                 )
 
@@ -1000,9 +1039,10 @@ class LocalSqliteRepository(ProjectRepository):
                 con.execute(
                     """
                     INSERT INTO port(
-                        id, device_id, name, speed, media, status, access_vlan_id, mode
+                        id, device_id, name, speed, media, status, access_vlan_id, mode,
+                        mac, side, position
                     )
-                    VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         _uuid_str(p.id),
@@ -1013,6 +1053,9 @@ class LocalSqliteRepository(ProjectRepository):
                         _enum_value(p.status),
                         _uuid_str(p.access_vlan_id) if p.access_vlan_id is not None else None,
                         _enum_value(p.mode),
+                        p.mac,
+                        _enum_value(p.side),
+                        int(p.position or 0),
                     ),
                 )
                 for vlan_uuid in p.tagged_vlan_ids:
@@ -1047,8 +1090,8 @@ class LocalSqliteRepository(ProjectRepository):
             for lag in snapshot.lags:
                 con.execute(
                     """
-                    INSERT INTO lag(id, site_id, device_id, name, mode, notes)
-                    VALUES(?, ?, ?, ?, ?, ?)
+                    INSERT INTO lag(id, site_id, device_id, name, mode, notes, mac)
+                    VALUES(?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         _uuid_str(lag.id),
@@ -1057,6 +1100,7 @@ class LocalSqliteRepository(ProjectRepository):
                         lag.name,
                         _enum_value(lag.mode),
                         lag.notes,
+                        lag.mac,
                     ),
                 )
                 for port_id in lag.member_port_ids:

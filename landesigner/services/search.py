@@ -54,10 +54,20 @@ def filter_devices(
         port_bits: list[str] = []
         for port in inv.ports_for_device(snapshot, device.id):
             port_bits.append(port.name)
+            if port.mac:
+                port_bits.append(port.mac)
+                port_bits.append("".join(ch for ch in port.mac if ch.isalnum()))
             port_bits.append(inv.port_vlan_summary(snapshot, port))
             for ip in inv.ips_for_port(snapshot, port.id):
                 port_bits.append(inv.ip_label(ip))
                 port_bits.append(ip.gateway)
+        for lag in inv.lags_for_device(snapshot, device.id):
+            port_bits.append(lag.name)
+            if lag.mac:
+                port_bits.append(lag.mac)
+                port_bits.append("".join(ch for ch in lag.mac if ch.isalnum()))
+        host = inv.host_for_device(snapshot, device)
+        host_name = host.hostname if host is not None else ""
         if matches(
             query,
             device.hostname,
@@ -65,6 +75,7 @@ def filter_devices(
             device.inventory_tag,
             role_label(device.role),
             type_txt,
+            host_name,
             *port_bits,
         ):
             result.append(device)
@@ -112,15 +123,17 @@ def filter_ports(snapshot: ProjectSnapshot, ports: list[Port], query: str) -> li
         link = inv.port_endpoint_label(snapshot, peer.id) if peer else ""
         ips = inv.ips_for_port(snapshot, port.id)
         ip_txt = ", ".join(inv.ip_label(ip) for ip in ips)
-        if matches(
-            query,
+        bits = [
             port.name,
+            port.mac,
+            "".join(ch for ch in port.mac if ch.isalnum()) if port.mac else "",
             port.speed,
             media_label(port.media),
             status_label(port.status),
             link,
             inv.port_vlan_summary(snapshot, port),
             ip_txt,
-        ):
+        ]
+        if matches(query, *bits):
             result.append(port)
     return result

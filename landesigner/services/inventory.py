@@ -24,8 +24,22 @@ from landesigner.domain.enums import (
     LagMode,
     PortMedia,
     PortMode,
+    PortSide,
     PortStatus,
 )
+
+
+def normalize_mac(value: str) -> str:
+    """Нормализовать MAC к виду AA:BB:CC:DD:EE:FF; пустая строка допустима."""
+    raw = (value or "").strip()
+    if not raw:
+        return ""
+    hex_chars = "".join(ch for ch in raw if ch.isalnum())
+    if len(hex_chars) != 12 or any(
+        ch not in "0123456789abcdefABCDEF" for ch in hex_chars
+    ):
+        raise ValueError("MAC должен быть вида AA:BB:CC:DD:EE:FF (12 hex-цифр)")
+    return ":".join(hex_chars[i : i + 2].upper() for i in range(0, 12, 2))
 
 
 def _require_site(snapshot: ProjectSnapshot) -> UUID:
@@ -288,11 +302,62 @@ def build_port_template(port_groups: list[dict]) -> list[dict]:
             media = PortMedia(media_raw).value
         except ValueError:
             media = PortMedia.COPPER.value
+        side_raw = str(group.get("side", PortSide.NONE.value))
+        try:
+            side = PortSide(side_raw).value
+        except ValueError:
+            side = PortSide.NONE.value
+        use_position = side != PortSide.NONE.value or bool(group.get("paired"))
         for i in range(start, start + count):
-            template.append({"name": f"{prefix}{i}", "media": media, "speed": speed})
+            entry: dict = {"name": f"{prefix}{i}", "media": media, "speed": speed}
+            if side != PortSide.NONE.value:
+                entry["side"] = side
+            if use_position:
+                entry["position"] = i
+            template.append(entry)
     if not template:
         template = [{"name": "Gi1/0/1", "media": PortMedia.COPPER.value, "speed": 1000}]
     return template
+
+
+def build_patch_panel_port_groups(
+    count: int = 24,
+    *,
+    media: PortMedia | str = PortMedia.COPPER,
+    speed: int = 1000,
+) -> list[dict]:
+    """Группы портов патч-панели: Front-1..N и Rear-1..N."""
+    media_enum = media if isinstance(media, PortMedia) else PortMedia(str(media))
+    n = max(1, int(count))
+    return [
+        {
+            "prefix": "Front-",
+            "count": n,
+            "media": media_enum.value,
+            "speed": int(speed),
+            "start": 1,
+            "side": PortSide.FRONT.value,
+            "paired": True,
+        },
+        {
+            "prefix": "Rear-",
+            "count": n,
+            "media": media_enum.value,
+            "speed": int(speed),
+            "start": 1,
+            "side": PortSide.REAR.value,
+            "paired": True,
+        },
+    ]
+
+
+def build_patch_panel_template(
+    count: int = 24,
+    *,
+    media: PortMedia | str = PortMedia.COPPER,
+    speed: int = 1000,
+) -> list[dict]:
+    return build_port_template(build_patch_panel_port_groups(count, media=media, speed=speed))
 
 
 def update_device_type(
@@ -337,6 +402,11 @@ def _ports_from_template(device_id: UUID, template: list[dict]) -> list[Port]:
             media = PortMedia(media_raw)
         except ValueError:
             media = PortMedia.COPPER
+        side_raw = str(item.get("side", PortSide.NONE.value))
+        try:
+            side = PortSide(side_raw)
+        except ValueError:
+            side = PortSide.NONE
         ports.append(
             Port(
                 device_id=device_id,
@@ -344,6 +414,8 @@ def _ports_from_template(device_id: UUID, template: list[dict]) -> list[Port]:
                 speed=int(item.get("speed", 1000)),
                 media=media,
                 status=PortStatus.FREE,
+                side=side,
+                position=int(item.get("position", 0) or 0),
             )
         )
     return ports
@@ -356,6 +428,7 @@ def update_port(
     name: str | None = None,
     speed: int | None = None,
     media: PortMedia | str | None = None,
+    mac: str | None = None,
 ) -> Port:
     port = next((p for p in snapshot.ports if p.id == port_id), None)
     if port is None:
@@ -376,6 +449,8 @@ def update_port(
         port.speed = int(speed)
     if media is not None:
         port.media = media if isinstance(media, PortMedia) else PortMedia(str(media))
+    if mac is not None:
+        port.mac = normalize_mac(mac)
     return port
 
 
@@ -386,6 +461,7 @@ def add_port(
     *,
     speed: int = 1000,
     media: PortMedia | str = PortMedia.COPPER,
+    mac: str = "",
 ) -> Port:
     device = next((d for d in snapshot.devices if d.id == device_id), None)
     if device is None:
@@ -404,6 +480,7 @@ def add_port(
         speed=int(speed),
         media=media_enum,
         status=PortStatus.FREE,
+        mac=normalize_mac(mac),
     )
     snapshot.ports.append(port)
     return port
@@ -425,6 +502,59 @@ def delete_port(snapshot: ProjectSnapshot, port_id: UUID) -> None:
     snapshot.ports = [p for p in snapshot.ports if p.id != port_id]
 
 
+def vms_for_host(snapshot: ProjectSnapshot, host_id: UUID) -> list[Device]:
+    vms = [
+        d
+        for d in snapshot.devices
+        if d.host_device_id == host_id and d.role == DeviceRole.VIRTUAL_MACHINE
+    ]
+    vms.sort(key=lambda d: d.hostname.casefold())
+    return vms
+
+
+def host_for_device(snapshot: ProjectSnapshot, device: Device) -> Device | None:
+    if device.host_device_id is None:
+        return None
+    return next((d for d in snapshot.devices if d.id == device.host_device_id), None)
+
+
+def _require_hypervisor_host(
+    snapshot: ProjectSnapshot,
+    host_device_id: UUID,
+    *,
+    site_id: UUID,
+    exclude_device_id: UUID | None = None,
+) -> Device:
+    if exclude_device_id is not None and host_device_id == exclude_device_id:
+        raise ValueError("ВМ не может быть хостом самой себе")
+    host = next((d for d in snapshot.devices if d.id == host_device_id), None)
+    if host is None:
+        raise ValueError("Гипервизор не найден")
+    if host.role != DeviceRole.HYPERVISOR:
+        raise ValueError("Хост должен иметь роль «Гипервизор»")
+    if host.site_id != site_id:
+        raise ValueError("Гипервизор должен быть на той же площадке")
+    return host
+
+
+def _apply_vm_host(
+    snapshot: ProjectSnapshot,
+    device: Device,
+    host_device_id: UUID,
+) -> None:
+    host = _require_hypervisor_host(
+        snapshot,
+        host_device_id,
+        site_id=device.site_id,
+        exclude_device_id=device.id,
+    )
+    device.host_device_id = host.id
+    device.room_id = host.room_id
+    device.rack_id = None
+    device.rack_u = None
+    device.rack_u_height = 1
+
+
 def add_device(
     snapshot: ProjectSnapshot,
     device_type_id: UUID,
@@ -433,11 +563,20 @@ def add_device(
     inventory_tag: str = "",
     room_id: UUID | None = None,
     rack_id: UUID | None = None,
+    rack_u: int | None = None,
+    rack_u_height: int = 1,
+    host_device_id: UUID | None = None,
 ) -> Device:
     site_id = _require_site(snapshot)
     device_type = next((dt for dt in snapshot.device_types if dt.id == device_type_id), None)
     if device_type is None:
         raise ValueError("Тип устройства не найден")
+
+    is_vm = device_type.role == DeviceRole.VIRTUAL_MACHINE
+    if is_vm and host_device_id is None:
+        raise ValueError("Для виртуального сервера укажите гипервизор")
+    if not is_vm and host_device_id is not None:
+        raise ValueError("Привязка к гипервизору доступна только для ВМ")
 
     device = Device(
         site_id=site_id,
@@ -446,11 +585,31 @@ def add_device(
         serial=serial.strip(),
         inventory_tag=inventory_tag.strip(),
         role=device_type.role,
-        room_id=room_id,
-        rack_id=rack_id,
+        room_id=None,
+        rack_id=None,
+        rack_u=None,
+        rack_u_height=1,
+        host_device_id=None,
     )
     snapshot.devices.append(device)
     snapshot.ports.extend(_ports_from_template(device.id, device_type.port_template))
+
+    if is_vm:
+        assert host_device_id is not None
+        _apply_vm_host(snapshot, device, host_device_id)
+        return device
+
+    if rack_id is not None or rack_u is not None:
+        set_device_rack_placement(
+            snapshot,
+            device.id,
+            rack_id=rack_id,
+            rack_u=rack_u,
+            rack_u_height=rack_u_height,
+            room_id=room_id,
+        )
+    elif room_id is not None:
+        device.room_id = room_id
     return device
 
 
@@ -463,8 +622,12 @@ def update_device(
     inventory_tag: str | None = None,
     room_id: UUID | None = None,
     rack_id: UUID | None = None,
+    rack_u: int | None = None,
+    rack_u_height: int | None = None,
+    host_device_id: UUID | None = None,
     clear_room: bool = False,
     clear_rack: bool = False,
+    clear_host: bool = False,
 ) -> Device:
     device = next((d for d in snapshot.devices if d.id == device_id), None)
     if device is None:
@@ -476,21 +639,221 @@ def update_device(
         device.serial = serial.strip()
     if inventory_tag is not None:
         device.inventory_tag = inventory_tag.strip()
+
+    is_vm = device.role == DeviceRole.VIRTUAL_MACHINE
+    if clear_host:
+        if is_vm:
+            raise ValueError("Для виртуального сервера укажите гипервизор")
+        device.host_device_id = None
+    elif host_device_id is not None:
+        if not is_vm:
+            raise ValueError("Привязка к гипервизору доступна только для ВМ")
+        _apply_vm_host(snapshot, device, host_device_id)
+        return device
+
+    if is_vm:
+        # ВМ не монтируется в шкаф; локация только через хост.
+        if device.host_device_id is None:
+            raise ValueError("Для виртуального сервера укажите гипервизор")
+        host = _require_hypervisor_host(
+            snapshot,
+            device.host_device_id,
+            site_id=device.site_id,
+            exclude_device_id=device.id,
+        )
+        device.room_id = host.room_id
+        device.rack_id = None
+        device.rack_u = None
+        device.rack_u_height = 1
+        return device
+
     if clear_room:
         device.room_id = None
-    elif room_id is not None:
+        device.rack_id = None
+        device.rack_u = None
+        device.rack_u_height = 1
+        return device
+
+    if room_id is not None:
         device.room_id = room_id
+        # Шкаф другой комнаты сбрасываем.
+        if device.rack_id is not None:
+            rack = next((r for r in snapshot.racks if r.id == device.rack_id), None)
+            if rack is None or rack.room_id != room_id:
+                device.rack_id = None
+                device.rack_u = None
+                device.rack_u_height = 1
+
     if clear_rack:
         device.rack_id = None
-    elif rack_id is not None:
-        device.rack_id = rack_id
+        device.rack_u = None
+        device.rack_u_height = 1
+    elif rack_id is not None or rack_u is not None or rack_u_height is not None:
+        set_device_rack_placement(
+            snapshot,
+            device_id,
+            rack_id=rack_id if rack_id is not None else device.rack_id,
+            rack_u=rack_u if rack_u is not None else device.rack_u,
+            rack_u_height=(
+                rack_u_height if rack_u_height is not None else device.rack_u_height
+            ),
+            room_id=device.room_id,
+        )
     return device
+
+
+def devices_in_rack(snapshot: ProjectSnapshot, rack_id: UUID) -> list[Device]:
+    devices = [d for d in snapshot.devices if d.rack_id == rack_id]
+    devices.sort(
+        key=lambda d: (
+            d.rack_u if d.rack_u is not None else 10**9,
+            d.hostname.casefold(),
+        )
+    )
+    return devices
+
+
+def rack_u_range(device: Device) -> tuple[int, int] | None:
+    if device.rack_id is None or device.rack_u is None:
+        return None
+    height = max(1, int(device.rack_u_height or 1))
+    start = int(device.rack_u)
+    return start, start + height - 1
+
+
+def rack_placement_label(device: Device) -> str:
+    rng = rack_u_range(device)
+    if rng is None:
+        return ""
+    start, end = rng
+    if start == end:
+        return f"U{start}"
+    return f"U{start}–{end}"
+
+
+def validate_rack_placement(
+    snapshot: ProjectSnapshot,
+    rack_id: UUID,
+    rack_u: int,
+    rack_u_height: int = 1,
+    *,
+    exclude_device_id: UUID | None = None,
+) -> None:
+    rack = next((r for r in snapshot.racks if r.id == rack_id), None)
+    if rack is None:
+        raise ValueError("Шкаф не найден")
+    height = max(1, int(rack_u_height))
+    start = int(rack_u)
+    if start < 1:
+        raise ValueError("Юнит должен быть ≥ 1")
+    end = start + height - 1
+    if end > int(rack.units):
+        raise ValueError(f"Размещение U{start}–{end} выходит за высоту шкафа ({rack.units}U)")
+    for other in devices_in_rack(snapshot, rack_id):
+        if exclude_device_id is not None and other.id == exclude_device_id:
+            continue
+        other_rng = rack_u_range(other)
+        if other_rng is None:
+            continue
+        o_start, o_end = other_rng
+        if start <= o_end and end >= o_start:
+            raise ValueError(
+                f"Пересечение с «{other.hostname}» ({rack_placement_label(other)})"
+            )
+
+
+def set_device_rack_placement(
+    snapshot: ProjectSnapshot,
+    device_id: UUID,
+    *,
+    rack_id: UUID | None,
+    rack_u: int | None,
+    rack_u_height: int = 1,
+    room_id: UUID | None = None,
+) -> Device:
+    device = next((d for d in snapshot.devices if d.id == device_id), None)
+    if device is None:
+        raise ValueError("Устройство не найдено")
+    if rack_id is None:
+        device.rack_id = None
+        device.rack_u = None
+        device.rack_u_height = 1
+        if room_id is not None:
+            device.room_id = room_id
+        return device
+    rack = next((r for r in snapshot.racks if r.id == rack_id), None)
+    if rack is None:
+        raise ValueError("Шкаф не найден")
+    if room_id is not None and rack.room_id != room_id:
+        raise ValueError("Шкаф не принадлежит выбранной комнате")
+    if rack_u is None:
+        device.room_id = rack.room_id
+        device.rack_id = rack_id
+        device.rack_u = None
+        device.rack_u_height = 1
+        return device
+    validate_rack_placement(
+        snapshot,
+        rack_id,
+        rack_u,
+        rack_u_height,
+        exclude_device_id=device_id,
+    )
+    device.room_id = rack.room_id
+    device.rack_id = rack_id
+    device.rack_u = int(rack_u)
+    device.rack_u_height = max(1, int(rack_u_height))
+    return device
+
+
+def devices_for_location(
+    snapshot: ProjectSnapshot,
+    kind: str | None,
+    location_id: UUID | None,
+) -> list[Device]:
+    """Устройства в зоне building/floor/room/rack."""
+    if not kind or location_id is None:
+        return list(snapshot.devices)
+    kind_l = kind.lower()
+    if kind_l == "rack":
+        return devices_in_rack(snapshot, location_id)
+    if kind_l == "room":
+        return [d for d in snapshot.devices if d.room_id == location_id]
+    if kind_l == "floor":
+        room_ids = {r.id for r in snapshot.rooms if r.floor_id == location_id}
+        return [d for d in snapshot.devices if d.room_id in room_ids]
+    if kind_l == "building":
+        floor_ids = {f.id for f in snapshot.floors if f.building_id == location_id}
+        room_ids = {r.id for r in snapshot.rooms if r.floor_id in floor_ids}
+        return [d for d in snapshot.devices if d.room_id in room_ids]
+    return list(snapshot.devices)
+
+
+def paired_port(snapshot: ProjectSnapshot, port: Port) -> Port | None:
+    if port.side == PortSide.NONE or port.position <= 0:
+        return None
+    want = PortSide.REAR if port.side == PortSide.FRONT else PortSide.FRONT
+    for other in snapshot.ports:
+        if other.device_id != port.device_id or other.id == port.id:
+            continue
+        if other.side == want and other.position == port.position:
+            return other
+    return None
 
 
 def delete_device(snapshot: ProjectSnapshot, device_id: UUID) -> None:
     device = next((d for d in snapshot.devices if d.id == device_id), None)
     if device is None:
         return
+
+    guests = vms_for_host(snapshot, device_id)
+    if guests:
+        names = ", ".join(d.hostname or str(d.id) for d in guests[:5])
+        extra = f" и ещё {len(guests) - 5}" if len(guests) > 5 else ""
+        raise ValueError(
+            f"Нельзя удалить гипервизор: есть ВМ ({names}{extra}). "
+            "Сначала удалите или перенесите виртуальные серверы."
+        )
 
     port_ids = {p.id for p in snapshot.ports if p.device_id == device_id}
     lag_ids = {lag.id for lag in snapshot.lags if lag.device_id == device_id}
@@ -581,6 +944,7 @@ def add_lag(
     mode: LagMode | str,
     member_port_ids: list[UUID],
     notes: str = "",
+    mac: str = "",
 ) -> Lag:
     site_id = _require_site(snapshot)
     if not any(d.id == device_id for d in snapshot.devices):
@@ -594,6 +958,7 @@ def add_lag(
         mode=mode_enum,
         member_port_ids=members,
         notes=notes.strip(),
+        mac=normalize_mac(mac),
     )
     snapshot.lags.append(lag)
     return lag
@@ -607,6 +972,7 @@ def update_lag(
     mode: LagMode | str | None = None,
     member_port_ids: list[UUID] | None = None,
     notes: str | None = None,
+    mac: str | None = None,
 ) -> Lag:
     lag = next((item for item in snapshot.lags if item.id == lag_id), None)
     if lag is None:
@@ -624,6 +990,8 @@ def update_lag(
         )
     if notes is not None:
         lag.notes = notes.strip()
+    if mac is not None:
+        lag.mac = normalize_mac(mac)
     return lag
 
 
@@ -653,6 +1021,9 @@ def device_location_label(snapshot: ProjectSnapshot, device_id: UUID) -> str:
         parts.append(room.name)
     if rack is not None:
         parts.append(rack.name)
+        u_label = rack_placement_label(device)
+        if u_label:
+            parts.append(u_label)
     return " / ".join(parts) if parts else "—"
 
 

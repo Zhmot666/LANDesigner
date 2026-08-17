@@ -5,7 +5,7 @@ from enum import StrEnum
 from uuid import UUID
 
 from landesigner.domain.entities import ProjectSnapshot
-from landesigner.domain.enums import PortStatus
+from landesigner.domain.enums import DeviceRole, PortStatus
 from landesigner.services import floor_plan as fp
 from landesigner.services import inventory as inv
 
@@ -27,6 +27,11 @@ ISSUE_CODE_LABELS: dict[str, str] = {
     "device_off_topology": "Нет на схеме",
     "device_off_floor_plan": "Нет на плане этажа",
     "lag_incomplete_links": "LAG без двух кабелей",
+    "patch_pair_half_connected": "Пара патч-панели занята с одной стороны",
+    "vm_missing_host": "ВМ без гипервизора",
+    "vm_invalid_host": "ВМ: некорректный хост",
+    "host_on_non_vm": "Хост у не-ВМ",
+    "vm_in_rack": "ВМ в шкафу",
 }
 
 
@@ -57,6 +62,8 @@ def validate_project(snapshot: ProjectSnapshot) -> list[ValidationIssue]:
     issues.extend(_check_devices_off_topology(snapshot))
     issues.extend(_check_devices_off_floor_plan(snapshot))
     issues.extend(_check_lag_links(snapshot))
+    issues.extend(_check_patch_panel_pairs(snapshot))
+    issues.extend(_check_virtual_machines(snapshot))
     return issues
 
 
@@ -250,4 +257,107 @@ def _check_lag_links(snapshot: ProjectSnapshot) -> list[ValidationIssue]:
                 entity_id=lag.id,
             )
         )
+    return issues
+
+
+def _check_patch_panel_pairs(snapshot: ProjectSnapshot) -> list[ValidationIssue]:
+    """Предупреждение: у сквозной пары Front/Rear кабель только с одной стороны."""
+    issues: list[ValidationIssue] = []
+    seen: set[tuple[UUID, int]] = set()
+    for port in snapshot.ports:
+        pair = inv.paired_port(snapshot, port)
+        if pair is None:
+            continue
+        key = (port.device_id, port.position)
+        if key in seen:
+            continue
+        seen.add(key)
+        cable_a = inv.cable_for_port(snapshot, port.id)
+        cable_b = inv.cable_for_port(snapshot, pair.id)
+        if (cable_a is None) == (cable_b is None):
+            continue
+        connected = port if cable_a is not None else pair
+        free = pair if cable_a is not None else port
+        label_c = inv.port_endpoint_label(snapshot, connected.id)
+        label_f = inv.port_endpoint_label(snapshot, free.id)
+        issues.append(
+            ValidationIssue(
+                IssueSeverity.WARNING,
+                "patch_pair_half_connected",
+                f"Пара патч-панели: кабель только на {label_c}, свободен {label_f}",
+                entity_kind="port",
+                entity_id=connected.id,
+            )
+        )
+    return issues
+
+
+def _check_virtual_machines(snapshot: ProjectSnapshot) -> list[ValidationIssue]:
+    issues: list[ValidationIssue] = []
+    devices_by_id = {d.id: d for d in snapshot.devices}
+    for device in snapshot.devices:
+        name = device.hostname or str(device.id)
+        if device.role == DeviceRole.VIRTUAL_MACHINE:
+            if device.host_device_id is None:
+                issues.append(
+                    ValidationIssue(
+                        IssueSeverity.ERROR,
+                        "vm_missing_host",
+                        f"ВМ «{name}» без гипервизора",
+                        entity_kind="device",
+                        entity_id=device.id,
+                    )
+                )
+            else:
+                host = devices_by_id.get(device.host_device_id)
+                if host is None:
+                    issues.append(
+                        ValidationIssue(
+                            IssueSeverity.ERROR,
+                            "vm_invalid_host",
+                            f"ВМ «{name}»: гипервизор не найден",
+                            entity_kind="device",
+                            entity_id=device.id,
+                        )
+                    )
+                elif host.role != DeviceRole.HYPERVISOR:
+                    issues.append(
+                        ValidationIssue(
+                            IssueSeverity.ERROR,
+                            "vm_invalid_host",
+                            f"ВМ «{name}»: хост «{host.hostname}» не гипервизор",
+                            entity_kind="device",
+                            entity_id=device.id,
+                        )
+                    )
+                elif host.site_id != device.site_id:
+                    issues.append(
+                        ValidationIssue(
+                            IssueSeverity.ERROR,
+                            "vm_invalid_host",
+                            f"ВМ «{name}»: гипервизор на другой площадке",
+                            entity_kind="device",
+                            entity_id=device.id,
+                        )
+                    )
+            if device.rack_id is not None:
+                issues.append(
+                    ValidationIssue(
+                        IssueSeverity.WARNING,
+                        "vm_in_rack",
+                        f"ВМ «{name}» не должна быть в шкафу",
+                        entity_kind="device",
+                        entity_id=device.id,
+                    )
+                )
+        elif device.host_device_id is not None:
+            issues.append(
+                ValidationIssue(
+                    IssueSeverity.WARNING,
+                    "host_on_non_vm",
+                    f"Устройство «{name}» не ВМ, но указан гипервизор",
+                    entity_kind="device",
+                    entity_id=device.id,
+                )
+            )
     return issues

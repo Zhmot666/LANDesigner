@@ -1,5 +1,5 @@
 from landesigner.domain.entities import ProjectMeta, ProjectSnapshot, Site
-from landesigner.domain.enums import CableKind, DeviceRole, PortMedia, PortStatus
+from landesigner.domain.enums import CableKind, DeviceRole, LagMode, PortMedia, PortStatus
 from landesigner.services import inventory as inv
 from landesigner.services import search as search_svc
 
@@ -188,6 +188,38 @@ def test_vlan_and_ip_on_port():
     inv.delete_ip(snap, ip.id)
 
 
+def test_normalize_mac_and_port_mac():
+    assert inv.normalize_mac("") == ""
+    assert inv.normalize_mac("aa-bb-cc-dd-ee-ff") == "AA:BB:CC:DD:EE:FF"
+    assert inv.normalize_mac("AABB.CCDD.EEFF") == "AA:BB:CC:DD:EE:FF"
+    try:
+        inv.normalize_mac("zz:zz:zz:zz:zz:zz")
+        assert False, "expected bad mac"
+    except ValueError:
+        pass
+
+    meta = ProjectMeta(name="T")
+    site = Site(project_id=meta.id, name="S")
+    snap = ProjectSnapshot(meta=meta, sites=[site])
+    dtype = inv.add_device_type(
+        snap, vendor="X", model="Y", role=DeviceRole.SERVER, port_count=2
+    )
+    device = inv.add_device(snap, dtype.id, "srv1")
+    port = inv.ports_for_device(snap, device.id)[0]
+    inv.update_port(snap, port.id, mac="00-11-22-33-44-55")
+    assert port.mac == "00:11:22:33:44:55"
+
+    lag = inv.add_lag(
+        snap,
+        device_id=device.id,
+        name="bond0",
+        mode=LagMode.LACP,
+        member_port_ids=[p.id for p in inv.ports_for_device(snap, device.id)],
+        mac="aa:bb:cc:dd:ee:01",
+    )
+    assert lag.mac == "AA:BB:CC:DD:EE:01"
+
+
 def test_update_port_media_and_name():
     meta = ProjectMeta(name="T")
     site = Site(project_id=meta.id, name="S")
@@ -321,3 +353,69 @@ def test_inventory_search_filters_devices_and_ips():
     assert len(search_svc.filter_ports(snap, snap.ports, "gi")) == 4
     assert search_svc.normalize_query("  AbC  ") == "abc"
     assert b.hostname == "acc-sw"
+
+
+def test_vm_requires_hypervisor_and_inherits_room():
+    meta = ProjectMeta(name="T")
+    site = Site(project_id=meta.id, name="S")
+    snap = ProjectSnapshot(meta=meta, sites=[site])
+    building = inv.add_building(snap, "B1")
+    floor = inv.add_floor(snap, building.id, "F1")
+    room = inv.add_room(snap, floor.id, "R1")
+    rack = inv.add_rack(snap, room.id, "Rack1", units=42)
+
+    hv_type = inv.add_device_type(
+        snap, vendor="VMware", model="ESXi", role=DeviceRole.HYPERVISOR, port_count=2
+    )
+    vm_type = inv.add_device_type(
+        snap, vendor="Generic", model="VM", role=DeviceRole.VIRTUAL_MACHINE, port_count=1
+    )
+    switch_type = inv.add_device_type(
+        snap, vendor="Cisco", model="2960", role=DeviceRole.SWITCH, port_count=1
+    )
+
+    host = inv.add_device(
+        snap,
+        hv_type.id,
+        "esxi-1",
+        room_id=room.id,
+        rack_id=rack.id,
+        rack_u=10,
+        rack_u_height=2,
+    )
+    assert host.rack_id == rack.id
+
+    try:
+        inv.add_device(snap, vm_type.id, "vm-orphan")
+        assert False, "expected ValueError"
+    except ValueError as exc:
+        assert "гипервизор" in str(exc).casefold() or "Гипервизор" in str(exc)
+
+    switch = inv.add_device(snap, switch_type.id, "sw1")
+    try:
+        inv.add_device(snap, vm_type.id, "vm-bad", host_device_id=switch.id)
+        assert False, "expected ValueError"
+    except ValueError as exc:
+        assert "Гипервизор" in str(exc) or "гипервизор" in str(exc).casefold()
+
+    vm = inv.add_device(snap, vm_type.id, "vm-web", host_device_id=host.id)
+    assert vm.host_device_id == host.id
+    assert vm.room_id == room.id
+    assert vm.rack_id is None
+    assert inv.host_for_device(snap, vm) is host
+    assert [d.hostname for d in inv.vms_for_host(snap, host.id)] == ["vm-web"]
+
+    found = search_svc.filter_devices(
+        snap, snap.devices, {t.id: t for t in snap.device_types}, "esxi-1"
+    )
+    assert any(d.hostname == "vm-web" for d in found)
+
+    try:
+        inv.delete_device(snap, host.id)
+        assert False, "expected ValueError"
+    except ValueError as exc:
+        assert "ВМ" in str(exc) or "виртуальн" in str(exc).casefold()
+
+    inv.delete_device(snap, vm.id)
+    inv.delete_device(snap, host.id)
+    assert not any(d.id == host.id for d in snap.devices)

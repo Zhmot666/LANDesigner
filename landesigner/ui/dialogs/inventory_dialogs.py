@@ -5,6 +5,7 @@ from uuid import UUID
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QComboBox,
+    QCompleter,
     QDialog,
     QDialogButtonBox,
     QDoubleSpinBox,
@@ -27,6 +28,7 @@ from landesigner.domain.enums import (
     DeviceRole,
     PortMedia,
     PortMode,
+    PortSide,
     PortStatus,
 )
 from landesigner.services import inventory as inventory_service
@@ -274,9 +276,9 @@ class DeviceTypeDialog(QDialog):
         layout.addWidget(QLabel("Группы портов (на одном устройстве могут отличаться)", self))
 
         self._groups = QTableWidget(self)
-        self._groups.setColumnCount(5)
+        self._groups.setColumnCount(6)
         self._groups.setHorizontalHeaderLabels(
-            ["Префикс имени", "Кол-во", "Старт №", "Среда", "Скорость"]
+            ["Префикс имени", "Кол-во", "Старт №", "Среда", "Скорость", "Сторона"]
         )
         self._groups.horizontalHeader().setStretchLastSection(True)
         self._groups.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
@@ -286,11 +288,16 @@ class DeviceTypeDialog(QDialog):
         group_btns = QHBoxLayout()
         add_btn = QPushButton("Добавить группу", self)
         remove_btn = QPushButton("Удалить группу", self)
-        # clicked передаёт bool — связываем через lambda без аргументов
+        pp24_btn = QPushButton("Патч-панель 24", self)
+        pp48_btn = QPushButton("Патч-панель 48", self)
         add_btn.clicked.connect(lambda: self._add_inherited_group_row())
         remove_btn.clicked.connect(lambda: self._remove_group_row())
+        pp24_btn.clicked.connect(lambda: self._apply_patch_panel(24))
+        pp48_btn.clicked.connect(lambda: self._apply_patch_panel(48))
         group_btns.addWidget(add_btn)
         group_btns.addWidget(remove_btn)
+        group_btns.addWidget(pp24_btn)
+        group_btns.addWidget(pp48_btn)
         group_btns.addStretch(1)
         layout.addLayout(group_btns)
 
@@ -411,19 +418,25 @@ class DeviceTypeDialog(QDialog):
             start_w = self._groups.cellWidget(row, 2)
             media_w = self._groups.cellWidget(row, 3)
             speed_w = self._groups.cellWidget(row, 4)
+            side_w = self._groups.cellWidget(row, 5)
             if not all([prefix_w, count_w, start_w, media_w, speed_w]):
                 continue
             media_raw = media_w.currentData()
             media = str(media_raw) if media_raw is not None else PortMedia.COPPER.value
-            groups.append(
-                {
-                    "prefix": prefix_w.text().strip() or "Port",
-                    "count": int(count_w.value()),
-                    "start": int(start_w.value()),
-                    "media": media,
-                    "speed": self._speed_from_combo(speed_w),
-                }
-            )
+            side = PortSide.NONE.value
+            if side_w is not None and side_w.currentData() is not None:
+                side = str(side_w.currentData())
+            group: dict = {
+                "prefix": prefix_w.text().strip() or "Port",
+                "count": int(count_w.value()),
+                "start": int(start_w.value()),
+                "media": media,
+                "speed": self._speed_from_combo(speed_w),
+            }
+            if side and side != PortSide.NONE.value:
+                group["side"] = side
+                group["paired"] = True
+            groups.append(group)
         return groups
 
     def _load_groups_from_template(self, template: list[dict]) -> None:
@@ -436,6 +449,7 @@ class DeviceTypeDialog(QDialog):
         current_prefix = None
         current_media = None
         current_speed = None
+        current_side = PortSide.NONE.value
         current_start = None
         current_count = 0
         current_next = None
@@ -444,6 +458,7 @@ class DeviceTypeDialog(QDialog):
             name = str(item.get("name", "Port"))
             media = str(item.get("media", PortMedia.COPPER.value))
             speed = int(item.get("speed", 1000))
+            side = str(item.get("side", PortSide.NONE.value) or PortSide.NONE.value)
 
             prefix = name
             number = None
@@ -458,6 +473,7 @@ class DeviceTypeDialog(QDialog):
                 current_prefix == prefix
                 and current_media == media
                 and current_speed == speed
+                and current_side == side
                 and number is not None
                 and current_next == number
             ):
@@ -470,17 +486,23 @@ class DeviceTypeDialog(QDialog):
                     media_enum = PortMedia(current_media)
                 except ValueError:
                     media_enum = PortMedia.COPPER
+                try:
+                    side_enum = PortSide(current_side)
+                except ValueError:
+                    side_enum = PortSide.NONE
                 self._insert_group_row(
                     current_prefix,
                     current_count,
                     current_start if current_start is not None else 1,
                     media_enum,
                     current_speed if current_speed is not None else 1000,
+                    side_enum,
                 )
 
             current_prefix = prefix
             current_media = media
             current_speed = speed
+            current_side = side
             current_start = number if number is not None else 1
             current_count = 1
             current_next = (number + 1) if number is not None else None
@@ -490,13 +512,38 @@ class DeviceTypeDialog(QDialog):
                 media_enum = PortMedia(current_media)
             except ValueError:
                 media_enum = PortMedia.COPPER
+            try:
+                side_enum = PortSide(current_side)
+            except ValueError:
+                side_enum = PortSide.NONE
             self._insert_group_row(
                 current_prefix,
                 current_count,
                 current_start if current_start is not None else 1,
                 media_enum,
                 current_speed if current_speed is not None else 1000,
+                side_enum,
             )
+
+    def _make_side_combo(self, selected: PortSide = PortSide.NONE) -> QComboBox:
+        combo = QComboBox(self)
+        combo.addItem("—", PortSide.NONE.value)
+        combo.addItem("Front", PortSide.FRONT.value)
+        combo.addItem("Rear", PortSide.REAR.value)
+        idx = combo.findData(selected.value if isinstance(selected, PortSide) else str(selected))
+        if idx >= 0:
+            combo.setCurrentIndex(idx)
+        combo.currentIndexChanged.connect(lambda _=0: self._update_preview())
+        return combo
+
+    def _apply_patch_panel(self, count: int) -> None:
+        role_idx = self._role.findData(DeviceRole.PATCH_PANEL.value)
+        if role_idx >= 0:
+            self._role.setCurrentIndex(role_idx)
+        self._groups.setRowCount(0)
+        self._insert_group_row("Front-", count, 1, PortMedia.COPPER, 1000, PortSide.FRONT)
+        self._insert_group_row("Rear-", count, 1, PortMedia.COPPER, 1000, PortSide.REAR)
+        self._update_preview()
 
     def _insert_group_row(
         self,
@@ -505,6 +552,7 @@ class DeviceTypeDialog(QDialog):
         start: int,
         media: PortMedia,
         speed: int,
+        side: PortSide = PortSide.NONE,
     ) -> None:
         row = self._groups.rowCount()
         self._groups.insertRow(row)
@@ -531,8 +579,15 @@ class DeviceTypeDialog(QDialog):
             except ValueError:
                 media = PortMedia.COPPER
 
+        if not isinstance(side, PortSide):
+            try:
+                side = PortSide(str(side))
+            except ValueError:
+                side = PortSide.NONE
+
         self._groups.setCellWidget(row, 3, self._make_media_combo(media))
         self._groups.setCellWidget(row, 4, self._make_speed_combo(int(speed)))
+        self._groups.setCellWidget(row, 5, self._make_side_combo(side))
 
     def _update_preview(self) -> None:
         from landesigner.services.inventory import build_port_template
@@ -570,47 +625,117 @@ class DeviceDialog(QDialog):
         parent=None,
     ) -> None:
         super().__init__(parent)
+        self._snapshot = snapshot
         self.setWindowTitle("Устройство" if device is None else "Редактировать устройство")
 
         layout = QVBoxLayout(self)
         form = QFormLayout()
 
+        self._role_filter = QComboBox(self)
+        self._role_filter.addItem("Все роли", None)
+        for role in DeviceRole:
+            self._role_filter.addItem(role_label(role), role.value)
+
         self._type = QComboBox(self)
-        for dt in snapshot.device_types:
-            label = f"{dt.vendor} {dt.model} ({role_label(dt.role)})"
-            self._type.addItem(label, str(dt.id))
+        self._type.setEditable(True)
+        self._type.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        self._type.setSizeAdjustPolicy(
+            QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
+        )
+        self._type.setMinimumContentsLength(28)
+        self._type.lineEdit().setPlaceholderText("Начните вводить vendor, модель…")
+        completer = QCompleter(self._type.model(), self._type)
+        completer.setCompletionMode(QCompleter.CompletionMode.PopupCompletion)
+        completer.setFilterMode(Qt.MatchFlag.MatchContains)
+        completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+        self._type.setCompleter(completer)
 
         self._hostname = QLineEdit(self)
         self._serial = QLineEdit(self)
         self._tag = QLineEdit(self)
 
+        self._host = QComboBox(self)
+        self._host.addItem("(выберите гипервизор)", None)
+        for d in sorted(
+            (x for x in snapshot.devices if x.role == DeviceRole.HYPERVISOR),
+            key=lambda x: x.hostname.casefold(),
+        ):
+            if device is not None and d.id == device.id:
+                continue
+            self._host.addItem(d.hostname or str(d.id), str(d.id))
+
         self._room = QComboBox(self)
         self._room.addItem("(без помещения)", None)
         for room in snapshot.rooms:
-            self._room.addItem(room.name, str(room.id))
+            self._room.addItem(self._room_label(room), str(room.id))
 
+        self._rack = QComboBox(self)
+        self._rack_u = QSpinBox(self)
+        self._rack_u.setRange(1, 200)
+        self._rack_u.setValue(1)
+        self._rack_h = QSpinBox(self)
+        self._rack_h.setRange(1, 48)
+        self._rack_h.setValue(1)
+        self._rack_h.setSuffix(" U")
+
+        form.addRow("Роль", self._role_filter)
         form.addRow("Тип", self._type)
         form.addRow("Имя хоста", self._hostname)
         form.addRow("Серийный номер", self._serial)
         form.addRow("Инв. номер", self._tag)
+        form.addRow("Гипервизор", self._host)
         form.addRow("Помещение", self._room)
+        form.addRow("Шкаф", self._rack)
+        form.addRow("Юнит (низ)", self._rack_u)
+        form.addRow("Высота", self._rack_h)
         layout.addLayout(form)
 
         if not snapshot.device_types:
             layout.addWidget(QLabel("Сначала создайте тип устройства.", self))
 
+        self._role_filter.currentIndexChanged.connect(lambda _=0: self._reload_types())
+        self._type.currentIndexChanged.connect(lambda _=0: self._sync_vm_fields())
+        self._room.currentIndexChanged.connect(self._reload_racks)
+        self._rack.currentIndexChanged.connect(self._on_rack_changed)
+
+        preferred_type_id = str(device.device_type_id) if device is not None else None
         if device is not None:
+            self._role_filter.setEnabled(False)
             self._type.setEnabled(False)
-            idx = self._type.findData(str(device.device_type_id))
-            if idx >= 0:
-                self._type.setCurrentIndex(idx)
+            self._type.setEditable(False)
+            dt = next(
+                (t for t in snapshot.device_types if t.id == device.device_type_id),
+                None,
+            )
+            if dt is not None:
+                ridx = self._role_filter.findData(dt.role.value)
+                if ridx >= 0:
+                    self._role_filter.setCurrentIndex(ridx)
             self._hostname.setText(device.hostname)
             self._serial.setText(device.serial)
             self._tag.setText(device.inventory_tag)
+            if device.host_device_id is not None:
+                hidx = self._host.findData(str(device.host_device_id))
+                if hidx >= 0:
+                    self._host.setCurrentIndex(hidx)
             if device.room_id is not None:
                 ridx = self._room.findData(str(device.room_id))
                 if ridx >= 0:
                     self._room.setCurrentIndex(ridx)
+            self._reload_racks()
+            if device.rack_id is not None:
+                kidx = self._rack.findData(str(device.rack_id))
+                if kidx >= 0:
+                    self._rack.setCurrentIndex(kidx)
+            if device.rack_u is not None:
+                self._rack_u.setValue(int(device.rack_u))
+            self._rack_h.setValue(max(1, int(device.rack_u_height or 1)))
+        else:
+            self._reload_racks()
+
+        self._reload_types(preferred_type_id=preferred_type_id)
+        self._on_rack_changed()
+        self._sync_vm_fields()
 
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
@@ -620,21 +745,175 @@ class DeviceDialog(QDialog):
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
 
-    def values(self) -> tuple[UUID, str, str, str, UUID | None]:
-        type_raw = self._type.currentData()
+    def _type_label(self, dt: DeviceType) -> str:
+        return f"{dt.vendor} {dt.model} ({role_label(dt.role)})"
+
+    def _reload_types(self, *, preferred_type_id: str | None = None) -> None:
+        keep = preferred_type_id
+        if keep is None:
+            keep = self._type.currentData()
+            if keep is not None:
+                keep = str(keep)
+
+        role_raw = self._role_filter.currentData()
+        types = sorted(
+            self._snapshot.device_types,
+            key=lambda t: (t.vendor.casefold(), t.model.casefold()),
+        )
+        if role_raw is not None:
+            types = [t for t in types if t.role.value == str(role_raw)]
+
+        self._type.blockSignals(True)
+        self._type.clear()
+        for dt in types:
+            self._type.addItem(self._type_label(dt), str(dt.id))
+        if keep is not None:
+            idx = self._type.findData(keep)
+            if idx >= 0:
+                self._type.setCurrentIndex(idx)
+            elif self._type.count() > 0:
+                self._type.setCurrentIndex(0)
+        elif self._type.count() > 0:
+            self._type.setCurrentIndex(0)
+        else:
+            self._type.setCurrentIndex(-1)
+            if self._type.isEditable() and self._type.lineEdit() is not None:
+                self._type.lineEdit().clear()
+        self._type.blockSignals(False)
+        self._sync_vm_fields()
+
+    def _selected_role(self) -> DeviceRole | None:
+        type_id = self._selected_type_id()
+        if type_id is None:
+            return None
+        dt = next((t for t in self._snapshot.device_types if t.id == type_id), None)
+        return dt.role if dt is not None else None
+
+    def _is_vm(self) -> bool:
+        return self._selected_role() == DeviceRole.VIRTUAL_MACHINE
+
+    def _sync_vm_fields(self) -> None:
+        is_vm = self._is_vm()
+        self._host.setEnabled(is_vm)
+        for w in (self._room, self._rack, self._rack_u, self._rack_h):
+            w.setEnabled(not is_vm)
+        if not is_vm:
+            self._on_rack_changed()
+        else:
+            self._rack.setEnabled(False)
+            self._rack_u.setEnabled(False)
+            self._rack_h.setEnabled(False)
+
+    def _room_label(self, room) -> str:
+        floor = next((f for f in self._snapshot.floors if f.id == room.floor_id), None)
+        building = (
+            next((b for b in self._snapshot.buildings if b.id == floor.building_id), None)
+            if floor is not None
+            else None
+        )
+        parts = []
+        if building is not None:
+            parts.append(building.name)
+        if floor is not None:
+            parts.append(floor.name)
+        parts.append(room.name)
+        return " / ".join(parts)
+
+    def _reload_racks(self) -> None:
+        current = self._rack.currentData()
+        self._rack.blockSignals(True)
+        self._rack.clear()
+        self._rack.addItem("(без шкафа)", None)
         room_raw = self._room.currentData()
-        type_id = UUID(str(type_raw)) if type_raw is not None else None
+        if room_raw is not None:
+            room_id = UUID(str(room_raw))
+            for rack in self._snapshot.racks:
+                if rack.room_id != room_id:
+                    continue
+                self._rack.addItem(f"{rack.name} ({rack.units}U)", str(rack.id))
+        if current is not None:
+            idx = self._rack.findData(current)
+            if idx >= 0:
+                self._rack.setCurrentIndex(idx)
+        self._rack.blockSignals(False)
+        self._on_rack_changed()
+
+    def _on_rack_changed(self) -> None:
+        if self._is_vm():
+            self._rack.setEnabled(False)
+            self._rack_u.setEnabled(False)
+            self._rack_h.setEnabled(False)
+            return
+        has_rack = self._rack.currentData() is not None
+        has_room = self._room.currentData() is not None
+        self._rack.setEnabled(has_room)
+        self._rack_u.setEnabled(has_rack)
+        self._rack_h.setEnabled(has_rack)
+        if has_rack:
+            rack_id = UUID(str(self._rack.currentData()))
+            rack = next((r for r in self._snapshot.racks if r.id == rack_id), None)
+            if rack is not None:
+                self._rack_u.setMaximum(max(1, int(rack.units)))
+                self._rack_h.setMaximum(max(1, int(rack.units)))
+
+    def values(
+        self,
+    ) -> tuple[
+        UUID, str, str, str, UUID | None, UUID | None, int | None, int, UUID | None
+    ]:
+        type_id = self._selected_type_id()
+        if self._is_vm():
+            host_raw = self._host.currentData()
+            host_id = UUID(str(host_raw)) if host_raw is not None else None
+            return (
+                type_id,  # type: ignore[return-value]
+                self._hostname.text().strip(),
+                self._serial.text().strip(),
+                self._tag.text().strip(),
+                None,
+                None,
+                None,
+                1,
+                host_id,
+            )
+        room_raw = self._room.currentData()
+        rack_raw = self._rack.currentData()
         room_id = UUID(str(room_raw)) if room_raw is not None else None
+        rack_id = UUID(str(rack_raw)) if rack_raw is not None else None
+        rack_u = int(self._rack_u.value()) if rack_id is not None else None
+        rack_h = int(self._rack_h.value()) if rack_id is not None else 1
         return (
             type_id,  # type: ignore[return-value]
             self._hostname.text().strip(),
             self._serial.text().strip(),
             self._tag.text().strip(),
             room_id,
+            rack_id,
+            rack_u,
+            rack_h,
+            None,
         )
 
+    def _selected_type_id(self) -> UUID | None:
+        type_raw = self._type.currentData()
+        if type_raw is not None:
+            return UUID(str(type_raw))
+        # После ручного ввода индекс может не совпасть — ищем по тексту.
+        text = self._type.currentText().strip().casefold()
+        if not text:
+            return None
+        for i in range(self._type.count()):
+            if self._type.itemText(i).casefold() == text:
+                raw = self._type.itemData(i)
+                return UUID(str(raw)) if raw is not None else None
+        return None
+
     def is_valid(self) -> bool:
-        return self._type.currentData() is not None and bool(self._hostname.text().strip())
+        if self._selected_type_id() is None or not self._hostname.text().strip():
+            return False
+        if self._is_vm() and self._host.currentData() is None:
+            return False
+        return True
 
 
 class CableDialog(QDialog):
@@ -1073,6 +1352,8 @@ class LagDialog(QDialog):
         for mode, label in LAG_MODE_RU.items():
             self._mode.addItem(label, mode.value)
         self._notes = QLineEdit(self)
+        self._mac = QLineEdit(self)
+        self._mac.setPlaceholderText("AA:BB:CC:DD:EE:FF")
 
         for device in snapshot.devices:
             self._device.addItem(device.hostname or str(device.id), str(device.id))
@@ -1080,6 +1361,7 @@ class LagDialog(QDialog):
         form.addRow("Устройство", self._device)
         form.addRow("Имя", self._name)
         form.addRow("Режим", self._mode)
+        form.addRow("MAC", self._mac)
         form.addRow("Заметки", self._notes)
         layout.addLayout(form)
 
@@ -1094,6 +1376,7 @@ class LagDialog(QDialog):
         if lag is not None:
             self._name.setText(lag.name)
             self._notes.setText(lag.notes)
+            self._mac.setText(lag.mac)
             midx = self._mode.findData(lag.mode.value)
             if midx >= 0:
                 self._mode.setCurrentIndex(midx)
@@ -1154,10 +1437,11 @@ class LagDialog(QDialog):
             mode,
             members,
             self._notes.text().strip(),
+            self._mac.text().strip(),
         )
 
     def is_valid(self) -> bool:
-        device_id, _name, _mode, members, _notes = self.values()
+        device_id, _name, _mode, members, _notes, _mac = self.values()
         return device_id is not None and len(members) >= 2
 
 
@@ -1183,6 +1467,7 @@ class PortPropertiesDialog(QDialog):
             initial_name = "Mgmt"
             initial_speed = 1000
             initial_media = PortMedia.COPPER
+            initial_mac = ""
         else:
             port = next((p for p in snapshot.ports if p.id == port_id), None)
             if port is None:
@@ -1192,6 +1477,7 @@ class PortPropertiesDialog(QDialog):
             initial_name = port.name
             initial_speed = int(port.speed)
             initial_media = port.media
+            initial_mac = port.mac
 
         layout = QVBoxLayout(self)
         form = QFormLayout()
@@ -1211,9 +1497,12 @@ class PortPropertiesDialog(QDialog):
         media_idx = self._media.findData(initial_media.value)
         if media_idx >= 0:
             self._media.setCurrentIndex(media_idx)
+        self._mac = QLineEdit(initial_mac, self)
+        self._mac.setPlaceholderText("AA:BB:CC:DD:EE:FF")
         form.addRow("Имя", self._name)
         form.addRow("Скорость", self._speed)
         form.addRow("Среда", self._media)
+        form.addRow("MAC", self._mac)
         hint = QLabel(
             "Новый порт появится только на этом устройстве; "
             "шаблон типа в каталоге не меняется."
@@ -1234,7 +1523,7 @@ class PortPropertiesDialog(QDialog):
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
 
-    def values(self) -> tuple[str, int, PortMedia]:
+    def values(self) -> tuple[str, int, PortMedia, str]:
         data = self._speed.currentData()
         if data is not None:
             speed = int(data)
@@ -1242,7 +1531,7 @@ class PortPropertiesDialog(QDialog):
             text = self._speed.currentText().replace("Мбит/с", "").strip()
             speed = int(text)
         media = PortMedia(str(self._media.currentData()))
-        return self._name.text().strip(), speed, media
+        return self._name.text().strip(), speed, media, self._mac.text().strip()
 
 
 class PortNetworkDialog(QDialog):

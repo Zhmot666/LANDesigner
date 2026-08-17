@@ -5,13 +5,11 @@ from uuid import UUID
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
-    QAbstractItemView,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QPushButton,
     QTableWidget,
-    QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
@@ -19,22 +17,8 @@ from PySide6.QtWidgets import (
 from landesigner.domain.entities import DeviceType, ProjectSnapshot
 from landesigner.services import search as search_service
 from landesigner.ui.labels import role_label
+from landesigner.ui.table_utils import make_item, select_row_by_id, table_update, tune_table
 from landesigner.ui.widgets.panel_card import PanelCard
-
-
-def _tune_table(table: QTableWidget) -> None:
-    table.setAlternatingRowColors(True)
-    table.setShowGrid(False)
-    table.setWordWrap(False)
-    table.verticalHeader().setVisible(False)
-    table.verticalHeader().setDefaultSectionSize(28)
-    table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-    table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-    table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
-    table.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-    table.horizontalHeader().setStretchLastSection(True)
-    table.horizontalHeader().setHighlightSections(False)
-    table.setFrameShape(QTableWidget.Shape.NoFrame)
 
 
 def _primary_btn(text: str, parent: QWidget) -> QPushButton:
@@ -105,7 +89,7 @@ class DeviceTypesView(QWidget):
             card.add_action(btn)
 
         self._table = QTableWidget(card)
-        _tune_table(self._table)
+        tune_table(self._table)
         self._table.setColumnCount(5)
         self._table.setHorizontalHeaderLabels(
             ["Производитель", "Модель", "Роль", "Портов", "Скорости"]
@@ -150,24 +134,31 @@ class DeviceTypesView(QWidget):
     def _refresh_table(self, *, preserve_selection: bool) -> None:
         selected = self.selected_type_id() if preserve_selection else None
         if self._snapshot is None:
-            self._table.setRowCount(0)
+            with table_update(self._table):
+                self._table.setRowCount(0)
             self._search_hint.setText("")
             return
 
         types = search_service.filter_device_types(self._types, self._query)
-        self._table.setRowCount(len(types))
-        restore_row = None
-        for row_idx, dt in enumerate(types):
-            speeds = sorted({int(p.get("speed", 0)) for p in dt.port_template})
-            speed_txt = "/".join(str(s) for s in speeds if s) or "—"
-            self._table.setItem(row_idx, 0, QTableWidgetItem(dt.vendor))
-            self._table.setItem(row_idx, 1, QTableWidgetItem(dt.model))
-            self._table.setItem(row_idx, 2, QTableWidgetItem(role_label(dt.role)))
-            self._table.setItem(row_idx, 3, QTableWidgetItem(str(len(dt.port_template))))
-            self._table.setItem(row_idx, 4, QTableWidgetItem(f"{speed_txt} Мбит/с"))
-            self._table.item(row_idx, 0).setData(Qt.ItemDataRole.UserRole, str(dt.id))
-            if selected is not None and dt.id == selected:
-                restore_row = row_idx
+        with table_update(self._table):
+            self._table.setRowCount(len(types))
+            for row_idx, dt in enumerate(types):
+                speeds = sorted({int(p.get("speed", 0)) for p in dt.port_template})
+                speed_txt = "/".join(str(s) for s in speeds if s) or "—"
+                max_speed = max(speeds) if speeds else 0
+                self._table.setItem(
+                    row_idx, 0, make_item(dt.vendor, entity_id=dt.id)
+                )
+                self._table.setItem(row_idx, 1, make_item(dt.model))
+                self._table.setItem(row_idx, 2, make_item(role_label(dt.role)))
+                self._table.setItem(
+                    row_idx,
+                    3,
+                    make_item(str(len(dt.port_template)), sort_key=len(dt.port_template)),
+                )
+                self._table.setItem(
+                    row_idx, 4, make_item(f"{speed_txt} Мбит/с", sort_key=max_speed)
+                )
 
         total = len(self._types)
         shown = len(types)
@@ -176,10 +167,9 @@ class DeviceTypesView(QWidget):
         else:
             self._search_hint.setText(f"{total}" if total else "")
 
-        if restore_row is not None:
-            self._table.selectRow(restore_row)
-        elif shown and search_service.normalize_query(self._query):
-            self._table.selectRow(0)
+        if not select_row_by_id(self._table, selected):
+            if shown and search_service.normalize_query(self._query):
+                self._table.selectRow(0)
 
     def _on_edit(self) -> None:
         type_id = self.selected_type_id()

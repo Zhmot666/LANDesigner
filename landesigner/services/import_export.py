@@ -35,6 +35,7 @@ from landesigner.domain.enums import (
     LagMode,
     PortMedia,
     PortMode,
+    PortSide,
     PortStatus,
 )
 
@@ -237,6 +238,9 @@ def _headers_for(section: str) -> list[str]:
             "role",
             "room_id",
             "rack_id",
+            "rack_u",
+            "rack_u_height",
+            "host_device_id",
         ],
         "vlans": ["id", "site_id", "vlan_id", "name", "description"],
         "ports": [
@@ -249,6 +253,9 @@ def _headers_for(section: str) -> list[str]:
             "mode",
             "access_vlan_id",
             "tagged_vlan_ids",
+            "mac",
+            "side",
+            "position",
         ],
         "cables": [
             "id",
@@ -260,7 +267,7 @@ def _headers_for(section: str) -> list[str]:
             "end_a_port_id",
             "end_b_port_id",
         ],
-        "lags": ["id", "site_id", "device_id", "name", "mode", "notes"],
+        "lags": ["id", "site_id", "device_id", "name", "mode", "notes", "mac"],
         "lag_members": ["lag_id", "port_id"],
         "ips": ["id", "site_id", "port_id", "lag_id", "address", "cidr", "gateway"],
         "topology_nodes": ["id", "site_id", "device_id", "x", "y"],
@@ -363,6 +370,9 @@ def _section_rows(snapshot: ProjectSnapshot, name: str) -> list[dict[str, str]]:
                 "role": d.role.value,
                 "room_id": _opt_uuid(d.room_id),
                 "rack_id": _opt_uuid(d.rack_id),
+                "rack_u": "" if d.rack_u is None else str(d.rack_u),
+                "rack_u_height": str(d.rack_u_height or 1),
+                "host_device_id": _opt_uuid(d.host_device_id),
             }
             for d in snapshot.devices
         ]
@@ -389,6 +399,9 @@ def _section_rows(snapshot: ProjectSnapshot, name: str) -> list[dict[str, str]]:
                 "mode": p.mode.value,
                 "access_vlan_id": _opt_uuid(p.access_vlan_id),
                 "tagged_vlan_ids": ";".join(str(v) for v in p.tagged_vlan_ids),
+                "mac": p.mac,
+                "side": p.side.value,
+                "position": str(p.position or 0),
             }
             for p in snapshot.ports
         ]
@@ -415,6 +428,7 @@ def _section_rows(snapshot: ProjectSnapshot, name: str) -> list[dict[str, str]]:
                 "name": lag.name,
                 "mode": lag.mode.value,
                 "notes": lag.notes,
+                "mac": lag.mac,
             }
             for lag in snapshot.lags
         ]
@@ -557,6 +571,7 @@ def _load_device_type(row: dict[str, str]) -> DeviceType:
 
 
 def _load_device(row: dict[str, str]) -> Device:
+    rack_u_raw = _get(row, "rack_u").strip()
     return Device(
         id=_req_uuid(row, "id"),
         site_id=_req_uuid(row, "site_id"),
@@ -567,6 +582,9 @@ def _load_device(row: dict[str, str]) -> Device:
         role=_enum(DeviceRole, _get(row, "role"), DeviceRole.OTHER),
         room_id=_opt_parse_uuid(_get(row, "room_id")),
         rack_id=_opt_parse_uuid(_get(row, "rack_id")),
+        rack_u=int(rack_u_raw) if rack_u_raw else None,
+        rack_u_height=max(1, _int(row, "rack_u_height", 1)),
+        host_device_id=_opt_parse_uuid(_get(row, "host_device_id")),
     )
 
 
@@ -597,6 +615,9 @@ def _load_port(row: dict[str, str]) -> Port:
         mode=_enum(PortMode, _get(row, "mode"), PortMode.ACCESS),
         access_vlan_id=_opt_parse_uuid(_get(row, "access_vlan_id")),
         tagged_vlan_ids=tagged,
+        mac=_get(row, "mac"),
+        side=_enum(PortSide, _get(row, "side"), PortSide.NONE),
+        position=_int(row, "position", 0),
     )
 
 
@@ -647,6 +668,7 @@ def _load_lags(
                 name=_get(row, "name") or "bond0",
                 mode=_enum(LagMode, _get(row, "mode"), LagMode.ACTIVE_BACKUP),
                 notes=_get(row, "notes"),
+                mac=_get(row, "mac"),
                 member_port_ids=members.get(lag_id, []),
             )
         )

@@ -24,6 +24,8 @@ ROLE_COLORS: dict[DeviceRole, QColor] = {
     DeviceRole.ROUTER: QColor("#3d6b9a"),
     DeviceRole.AP: QColor("#5a8f6a"),
     DeviceRole.SERVER: QColor("#8b6b4a"),
+    DeviceRole.HYPERVISOR: QColor("#6a5a8b"),
+    DeviceRole.VIRTUAL_MACHINE: QColor("#5a7a9a"),
     DeviceRole.WORKSTATION: QColor("#6b7c8a"),
     DeviceRole.PATCH_PANEL: QColor("#7a6b8a"),
     DeviceRole.OTHER: QColor("#667784"),

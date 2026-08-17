@@ -116,6 +116,7 @@ def _devices_report(snapshot: ProjectSnapshot) -> ReportTable:
         type_txt = f"{dt.vendor} {dt.model}".strip() if dt else ""
         room = rooms.get(d.room_id) if d.room_id else None
         rack = racks.get(d.rack_id) if d.rack_id else None
+        u_label = inv.rack_placement_label(d) or ""
         rows.append(
             [
                 d.hostname,
@@ -125,6 +126,7 @@ def _devices_report(snapshot: ProjectSnapshot) -> ReportTable:
                 type_txt,
                 room.name if room else "",
                 rack.name if rack else "",
+                u_label,
                 str(len(inv.ports_for_device(snapshot, d.id))),
             ]
         )
@@ -139,6 +141,7 @@ def _devices_report(snapshot: ProjectSnapshot) -> ReportTable:
             "Тип",
             "Комната",
             "Шкаф",
+            "Юниты",
             "Портов",
         ],
         rows,
@@ -163,6 +166,7 @@ def _ports_report(snapshot: ProjectSnapshot) -> ReportTable:
             [
                 device.hostname if device else "",
                 port.name,
+                port.mac,
                 str(port.speed),
                 media_label(port.media),
                 status_label(port.status),
@@ -178,6 +182,7 @@ def _ports_report(snapshot: ProjectSnapshot) -> ReportTable:
         [
             "Устройство",
             "Порт",
+            "MAC",
             "Скорость",
             "Среда",
             "Статус",

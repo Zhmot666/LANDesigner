@@ -191,12 +191,21 @@ QTableView {
 QHeaderView::section {
     background: #f8fafb;
     color: #667784;
-    padding: 8px 10px;
+    padding: 8px 12px 8px 10px;
     border: none;
-    border-bottom: 1px solid #e9eef2;
-    border-right: none;
+    border-bottom: 1px solid #d8e0e6;
+    border-right: 1px solid #c7d1d8;
     font-weight: 600;
     font-size: 12px;
+}
+
+QHeaderView::section:last {
+    border-right: none;
+}
+
+QHeaderView::section:hover {
+    background: #eef3f5;
+    color: #23313a;
 }
 """
 

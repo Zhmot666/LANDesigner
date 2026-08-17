@@ -507,18 +507,14 @@ class MainWindow(QMainWindow):
             self._floor_plan_view.select_floor(obj_id)
         if not isinstance(obj_id, UUID):
             self._device_card.show_project()
+            self._inventory_view.set_location_filter(None, None)
             return
         snapshot = self._active_snapshot
         if snapshot is None:
             return
-        if kind == TreeKind.SITE:
-            self._device_card.show_project()
-        elif kind == TreeKind.BUILDING:
-            self._device_card.show_building(obj_id)
-        elif kind == TreeKind.FLOOR:
-            floor = next((f for f in snapshot.floors if f.id == obj_id), None)
-            if floor is not None:
-                self._device_card.show_building(floor.building_id)
+        elif kind == TreeKind.RACK:
+            self._device_card.show_rack(obj_id)
+            self._inventory_view.set_location_filter("rack", obj_id)
         elif kind == TreeKind.ROOM:
             room = next((r for r in snapshot.rooms if r.id == obj_id), None)
             if room is None:
@@ -526,16 +522,18 @@ class MainWindow(QMainWindow):
             floor = next((f for f in snapshot.floors if f.id == room.floor_id), None)
             if floor is not None:
                 self._device_card.show_building(floor.building_id)
-        elif kind == TreeKind.RACK:
-            rack = next((rk for rk in snapshot.racks if rk.id == obj_id), None)
-            if rack is None:
-                return
-            room = next((r for r in snapshot.rooms if r.id == rack.room_id), None)
-            if room is None:
-                return
-            floor = next((f for f in snapshot.floors if f.id == room.floor_id), None)
+            self._inventory_view.set_location_filter("room", obj_id)
+        elif kind == TreeKind.FLOOR:
+            floor = next((f for f in snapshot.floors if f.id == obj_id), None)
             if floor is not None:
                 self._device_card.show_building(floor.building_id)
+            self._inventory_view.set_location_filter("floor", obj_id)
+        elif kind == TreeKind.BUILDING:
+            self._device_card.show_building(obj_id)
+            self._inventory_view.set_location_filter("building", obj_id)
+        elif kind == TreeKind.SITE:
+            self._device_card.show_project()
+            self._inventory_view.set_location_filter(None, None)
 
     def _on_topology_connect_devices(self, device_a: object, device_b: object) -> None:
         snapshot = self._require_snapshot()
@@ -1346,10 +1344,12 @@ class MainWindow(QMainWindow):
         if dlg.exec() != DeviceDialog.DialogCode.Accepted:
             return
         if not dlg.is_valid():
-            QMessageBox.warning(self, "Устройство", "Укажите тип и имя хоста.")
+            QMessageBox.warning(self, "Устройство", "Укажите тип, имя хоста и гипервизор (для ВМ).")
             return
 
-        type_id, hostname, serial, tag, room_id = dlg.values()
+        type_id, hostname, serial, tag, room_id, rack_id, rack_u, rack_h, host_id = (
+            dlg.values()
+        )
         try:
             inventory_service.add_device(
                 snapshot,
@@ -1358,6 +1358,10 @@ class MainWindow(QMainWindow):
                 serial=serial,
                 inventory_tag=tag,
                 room_id=room_id,
+                rack_id=rack_id,
+                rack_u=rack_u,
+                rack_u_height=rack_h,
+                host_device_id=host_id,
             )
         except Exception as e:
             QMessageBox.critical(self, "Ошибка", str(e))
@@ -1376,19 +1380,28 @@ class MainWindow(QMainWindow):
         if dlg.exec() != DeviceDialog.DialogCode.Accepted:
             return
         if not dlg.is_valid():
-            QMessageBox.warning(self, "Устройство", "Укажите имя хоста.")
+            QMessageBox.warning(self, "Устройство", "Укажите имя хоста (для ВМ — и гипервизор).")
             return
 
-        _, hostname, serial, tag, room_id = dlg.values()
-        inventory_service.update_device(
-            snapshot,
-            device_id,
-            hostname=hostname,
-            serial=serial,
-            inventory_tag=tag,
-            room_id=room_id,
-            clear_room=room_id is None,
-        )
+        _, hostname, serial, tag, room_id, rack_id, rack_u, rack_h, host_id = dlg.values()
+        try:
+            inventory_service.update_device(
+                snapshot,
+                device_id,
+                hostname=hostname,
+                serial=serial,
+                inventory_tag=tag,
+                room_id=room_id,
+                rack_id=rack_id,
+                rack_u=rack_u,
+                rack_u_height=rack_h,
+                host_device_id=host_id,
+                clear_room=room_id is None and host_id is None,
+                clear_rack=room_id is not None and rack_id is None,
+            )
+        except Exception as e:
+            QMessageBox.critical(self, "Ошибка", str(e))
+            return
         self._mark_dirty()
 
     def _on_delete_device(self, device_id: UUID) -> None:
@@ -1402,7 +1415,11 @@ class MainWindow(QMainWindow):
         )
         if answer != QMessageBox.StandardButton.Yes:
             return
-        inventory_service.delete_device(snapshot, device_id)
+        try:
+            inventory_service.delete_device(snapshot, device_id)
+        except Exception as e:
+            QMessageBox.critical(self, "Удаление", str(e))
+            return
         self._mark_dirty()
 
     def _on_add_cable(self) -> None:
@@ -1625,7 +1642,7 @@ class MainWindow(QMainWindow):
         if not dlg.is_valid():
             QMessageBox.warning(self, "LAG", "Выберите устройство и минимум два порта.")
             return
-        device_id, name, mode, members, notes = dlg.values()
+        device_id, name, mode, members, notes, mac = dlg.values()
         try:
             lag = inventory_service.add_lag(
                 snapshot,
@@ -1634,6 +1651,7 @@ class MainWindow(QMainWindow):
                 mode=mode,
                 member_port_ids=members,
                 notes=notes,
+                mac=mac,
             )
         except Exception as e:
             QMessageBox.critical(self, "LAG", str(e))
@@ -1654,7 +1672,7 @@ class MainWindow(QMainWindow):
         if not dlg.is_valid():
             QMessageBox.warning(self, "LAG", "Выберите минимум два порта.")
             return
-        _device_id, name, mode, members, notes = dlg.values()
+        _device_id, name, mode, members, notes, mac = dlg.values()
         try:
             inventory_service.update_lag(
                 snapshot,
@@ -1663,6 +1681,7 @@ class MainWindow(QMainWindow):
                 mode=mode,
                 member_port_ids=members,
                 notes=notes,
+                mac=mac,
             )
         except Exception as e:
             QMessageBox.critical(self, "LAG", str(e))
@@ -1694,10 +1713,10 @@ class MainWindow(QMainWindow):
         dlg = PortPropertiesDialog(snapshot, device_id=device_id, parent=self)
         if dlg.exec() != PortPropertiesDialog.DialogCode.Accepted:
             return
-        name, speed, media = dlg.values()
+        name, speed, media, mac = dlg.values()
         try:
             port = inventory_service.add_port(
-                snapshot, device_id, name, speed=speed, media=media
+                snapshot, device_id, name, speed=speed, media=media, mac=mac
             )
         except Exception as e:
             QMessageBox.critical(self, "Порт", str(e))
@@ -1738,10 +1757,10 @@ class MainWindow(QMainWindow):
         dlg = PortPropertiesDialog(snapshot, port_id, parent=self)
         if dlg.exec() != PortPropertiesDialog.DialogCode.Accepted:
             return
-        name, speed, media = dlg.values()
+        name, speed, media, mac = dlg.values()
         try:
             inventory_service.update_port(
-                snapshot, port_id, name=name, speed=speed, media=media
+                snapshot, port_id, name=name, speed=speed, media=media, mac=mac
             )
         except Exception as e:
             QMessageBox.critical(self, "Порт", str(e))

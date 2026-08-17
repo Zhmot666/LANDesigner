@@ -3,8 +3,31 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from landesigner.domain.entities import DeviceType, ProjectSnapshot
-from landesigner.domain.enums import DeviceRole, PortMedia
+from landesigner.domain.enums import DeviceRole, PortMedia, PortSide
 from landesigner.services import inventory as inv
+
+
+def _pp_groups(count: int) -> tuple[dict, ...]:
+    return (
+        {
+            "prefix": "Front-",
+            "count": count,
+            "media": PortMedia.COPPER.value,
+            "speed": 1000,
+            "start": 1,
+            "side": PortSide.FRONT.value,
+            "paired": True,
+        },
+        {
+            "prefix": "Rear-",
+            "count": count,
+            "media": PortMedia.COPPER.value,
+            "speed": 1000,
+            "start": 1,
+            "side": PortSide.REAR.value,
+            "paired": True,
+        },
+    )
 
 
 @dataclass(frozen=True)
@@ -96,9 +119,8 @@ DEVICE_TYPE_PRESETS: tuple[DeviceTypePreset, ...] = (
         vendor="Generic",
         model="PP-24",
         role=DeviceRole.PATCH_PANEL,
-        port_groups=(
-            {"prefix": "P", "count": 24, "media": PortMedia.COPPER.value, "speed": 1000, "start": 1},
-        ),
+        description="24 пары Front/Rear",
+        port_groups=_pp_groups(24),
     ),
     DeviceTypePreset(
         key="pp48",
@@ -106,9 +128,8 @@ DEVICE_TYPE_PRESETS: tuple[DeviceTypePreset, ...] = (
         vendor="Generic",
         model="PP-48",
         role=DeviceRole.PATCH_PANEL,
-        port_groups=(
-            {"prefix": "P", "count": 48, "media": PortMedia.COPPER.value, "speed": 1000, "start": 1},
-        ),
+        description="48 пар Front/Rear",
+        port_groups=_pp_groups(48),
     ),
 )
 

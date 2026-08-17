@@ -14,7 +14,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from landesigner.domain.entities import Building, Device, ProjectSnapshot
+from landesigner.domain.entities import Building, Device, ProjectSnapshot, Rack
 from landesigner.domain.enums import PortStatus
 from landesigner.services import inventory as inv
 from landesigner.ui.labels import lag_mode_label, role_label
@@ -25,6 +25,7 @@ class ContextKind(str, Enum):
     EMPTY = "empty"
     PROJECT = "project"
     BUILDING = "building"
+    RACK = "rack"
     DEVICE = "device"
 
 
@@ -44,6 +45,7 @@ class ContextCard(QWidget):
         self._snapshot: ProjectSnapshot | None = None
         self._kind = ContextKind.EMPTY
         self._building_id: UUID | None = None
+        self._rack_id: UUID | None = None
         self._device_id: UUID | None = None
         self._project_file: str | None = None
 
@@ -66,10 +68,12 @@ class ContextCard(QWidget):
         self._page_empty = self._build_empty_page()
         self._page_project = self._build_project_page()
         self._page_building = self._build_building_page()
+        self._page_rack = self._build_rack_page()
         self._page_device = self._build_device_page()
         self._stack.addWidget(self._page_empty)
         self._stack.addWidget(self._page_project)
         self._stack.addWidget(self._page_building)
+        self._stack.addWidget(self._page_rack)
         self._stack.addWidget(self._page_device)
         self._card.set_body_widget(self._stack)
         root.addWidget(self._card)
@@ -177,6 +181,36 @@ class ContextCard(QWidget):
         layout.addStretch(1)
         return page
 
+    def _build_rack_page(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
+        self._rack_title = self._title_label(page)
+        layout.addWidget(self._rack_title)
+        form = QFormLayout()
+        form.setSpacing(4)
+        form.setContentsMargins(0, 0, 0, 0)
+        self._rack_location = QLabel("—", page)
+        self._rack_units = QLabel("—", page)
+        self._rack_fill = QLabel("—", page)
+        self._rack_devices = QLabel("—", page)
+        for label in (
+            self._rack_location,
+            self._rack_units,
+            self._rack_fill,
+            self._rack_devices,
+        ):
+            label.setWordWrap(True)
+            label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        form.addRow("Расположение", self._rack_location)
+        form.addRow("Высота", self._rack_units)
+        form.addRow("Занято", self._rack_fill)
+        form.addRow("Устройства", self._rack_devices)
+        layout.addLayout(form)
+        layout.addStretch(1)
+        return page
+
     def _build_device_page(self) -> QWidget:
         page = QWidget()
         layout = QVBoxLayout(page)
@@ -191,6 +225,8 @@ class ContextCard(QWidget):
         self._dev_type = QLabel("—", page)
         self._dev_serial = QLabel("—", page)
         self._dev_tag = QLabel("—", page)
+        self._dev_host = QLabel("—", page)
+        self._dev_vms = QLabel("—", page)
         self._dev_location = QLabel("—", page)
         self._dev_ports = QLabel("—", page)
         self._dev_lags = QLabel("—", page)
@@ -199,6 +235,8 @@ class ContextCard(QWidget):
             self._dev_type,
             self._dev_serial,
             self._dev_tag,
+            self._dev_host,
+            self._dev_vms,
             self._dev_location,
             self._dev_ports,
             self._dev_lags,
@@ -209,6 +247,8 @@ class ContextCard(QWidget):
         form.addRow("Тип", self._dev_type)
         form.addRow("S/N", self._dev_serial)
         form.addRow("Инв. №", self._dev_tag)
+        form.addRow("Гипервизор", self._dev_host)
+        form.addRow("ВМ", self._dev_vms)
         form.addRow("Расположение", self._dev_location)
         form.addRow("Порты", self._dev_ports)
         form.addRow("LAG", self._dev_lags)
@@ -230,6 +270,10 @@ class ContextCard(QWidget):
             if any(d.id == self._device_id for d in snapshot.devices):
                 self.show_device(self._device_id)
                 return
+        if self._kind == ContextKind.RACK and self._rack_id is not None:
+            if any(r.id == self._rack_id for r in snapshot.racks):
+                self.show_rack(self._rack_id)
+                return
         if self._kind == ContextKind.BUILDING and self._building_id is not None:
             if any(b.id == self._building_id for b in snapshot.buildings):
                 self.show_building(self._building_id)
@@ -239,6 +283,7 @@ class ContextCard(QWidget):
     def clear(self) -> None:
         self._kind = ContextKind.EMPTY
         self._building_id = None
+        self._rack_id = None
         self._device_id = None
         self._card.set_subtitle("Нет открытого проекта")
         self._stack.setCurrentWidget(self._page_empty)
@@ -251,6 +296,7 @@ class ContextCard(QWidget):
             return
         self._kind = ContextKind.PROJECT
         self._building_id = None
+        self._rack_id = None
         self._device_id = None
         self._fill_project()
         self._stack.setCurrentWidget(self._page_project)
@@ -267,9 +313,27 @@ class ContextCard(QWidget):
             return
         self._kind = ContextKind.BUILDING
         self._building_id = building_id
+        self._rack_id = None
         self._device_id = None
         self._fill_building(building)
         self._stack.setCurrentWidget(self._page_building)
+        self._set_nav_visible(False)
+        self._btn_edit.setEnabled(True)
+
+    def show_rack(self, rack_id: UUID | None) -> None:
+        if rack_id is None or self._snapshot is None:
+            self.show_project()
+            return
+        rack = next((r for r in self._snapshot.racks if r.id == rack_id), None)
+        if rack is None:
+            self.show_project()
+            return
+        self._kind = ContextKind.RACK
+        self._rack_id = rack_id
+        self._building_id = None
+        self._device_id = None
+        self._fill_rack(rack)
+        self._stack.setCurrentWidget(self._page_rack)
         self._set_nav_visible(False)
         self._btn_edit.setEnabled(True)
 
@@ -284,6 +348,7 @@ class ContextCard(QWidget):
         self._kind = ContextKind.DEVICE
         self._device_id = device_id
         self._building_id = None
+        self._rack_id = None
         self._fill_device(device)
         self._stack.setCurrentWidget(self._page_device)
         self._set_nav_visible(True)
@@ -340,6 +405,41 @@ class ContextCard(QWidget):
         )
         self._bld_floors.setText(floors_txt)
 
+    def _fill_rack(self, rack: Rack) -> None:
+        assert self._snapshot is not None
+        snap = self._snapshot
+        room = next((r for r in snap.rooms if r.id == rack.room_id), None)
+        floor = (
+            next((f for f in snap.floors if f.id == room.floor_id), None)
+            if room is not None
+            else None
+        )
+        building = (
+            next((b for b in snap.buildings if b.id == floor.building_id), None)
+            if floor is not None
+            else None
+        )
+        loc_parts = [
+            p.name
+            for p in (building, floor, room)
+            if p is not None
+        ]
+        devices = inv.devices_in_rack(snap, rack.id)
+        used = 0
+        lines: list[str] = []
+        for device in devices:
+            label = inv.rack_placement_label(device) or "U?"
+            lines.append(f"{label} · {device.hostname}")
+            rng = inv.rack_u_range(device)
+            if rng is not None:
+                used += rng[1] - rng[0] + 1
+        self._card.set_subtitle("Шкаф")
+        self._rack_title.setText(rack.name or "—")
+        self._rack_location.setText(" / ".join(loc_parts) if loc_parts else "—")
+        self._rack_units.setText(f"{rack.units} U")
+        self._rack_fill.setText(f"{used} из {rack.units} U · устройств {len(devices)}")
+        self._rack_devices.setText("\n".join(lines) if lines else "—")
+
     def _fill_device(self, device: Device) -> None:
         assert self._snapshot is not None
         snap = self._snapshot
@@ -359,6 +459,13 @@ class ContextCard(QWidget):
         self._dev_type.setText(type_txt or "—")
         self._dev_serial.setText(device.serial or "—")
         self._dev_tag.setText(device.inventory_tag or "—")
+        host = inv.host_for_device(snap, device)
+        self._dev_host.setText(host.hostname if host is not None else "—")
+        vms = inv.vms_for_host(snap, device.id)
+        if vms:
+            self._dev_vms.setText("\n".join(vm.hostname or str(vm.id) for vm in vms))
+        else:
+            self._dev_vms.setText("—")
         self._dev_location.setText(inv.device_location_label(snap, device.id))
         self._dev_ports.setText(summary)
         lags = inv.lags_for_device(snap, device.id)

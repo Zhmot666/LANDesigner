@@ -4,7 +4,6 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QTextDocument
 from PySide6.QtPrintSupport import QPrintDialog, QPrinter
 from PySide6.QtWidgets import (
-    QAbstractItemView,
     QComboBox,
     QFileDialog,
     QHBoxLayout,
@@ -13,7 +12,6 @@ from PySide6.QtWidgets import (
     QPushButton,
     QSplitter,
     QTableWidget,
-    QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
@@ -23,6 +21,7 @@ from landesigner.services import reports as reports_svc
 from landesigner.services import validation as validation_svc
 from landesigner.services.reports import ReportKind
 from landesigner.services.validation import IssueSeverity
+from landesigner.ui.table_utils import make_item, table_update, tune_table
 from landesigner.ui.widgets.panel_card import PanelCard
 
 _SEVERITY_RU = {
@@ -62,7 +61,7 @@ class ReportsView(QWidget):
         self._btn_validate.clicked.connect(self.run_validation)
         issues_card.add_action(self._btn_validate)
         self._issues_table = QTableWidget(issues_card)
-        self._tune_table(self._issues_table)
+        tune_table(self._issues_table)
         self._issues_table.setColumnCount(3)
         self._issues_table.setHorizontalHeaderLabels(["Уровень", "Проверка", "Сообщение"])
         issues_card.set_body_widget(self._issues_table)
@@ -98,7 +97,7 @@ class ReportsView(QWidget):
         self._report_hint.setProperty("muted", True)
         body_layout.addWidget(self._report_hint)
         self._report_table = QTableWidget(body)
-        self._tune_table(self._report_table)
+        tune_table(self._report_table)
         body_layout.addWidget(self._report_table, stretch=1)
         reports_card.set_body_widget(body)
         splitter.addWidget(reports_card)
@@ -134,15 +133,19 @@ class ReportsView(QWidget):
                     f"инфо {stats['infos']}"
                 )
 
-        self._issues_table.setRowCount(len(issues))
-        for row, issue in enumerate(issues):
-            sev = QTableWidgetItem(_SEVERITY_RU.get(issue.severity, issue.severity.value))
-            sev.setForeground(_SEVERITY_COLOR.get(issue.severity, QColor("#23313a")))
-            self._issues_table.setItem(row, 0, sev)
-            check = QTableWidgetItem(issue.code_label)
-            check.setToolTip(issue.code)
-            self._issues_table.setItem(row, 1, check)
-            self._issues_table.setItem(row, 2, QTableWidgetItem(issue.message))
+        with table_update(self._issues_table):
+            self._issues_table.setRowCount(len(issues))
+            for row, issue in enumerate(issues):
+                sev = make_item(
+                    _SEVERITY_RU.get(issue.severity, issue.severity.value),
+                    sort_key=issue.severity.value,
+                )
+                sev.setForeground(_SEVERITY_COLOR.get(issue.severity, QColor("#23313a")))
+                self._issues_table.setItem(row, 0, sev)
+                check = make_item(issue.code_label)
+                check.setToolTip(issue.code)
+                self._issues_table.setItem(row, 1, check)
+                self._issues_table.setItem(row, 2, make_item(issue.message))
         self._issues_table.resizeColumnsToContents()
 
     def build_report(self) -> None:
@@ -196,20 +199,12 @@ class ReportsView(QWidget):
         doc.print_(printer)
 
     def _fill_report_table(self, table: reports_svc.ReportTable) -> None:
-        self._report_table.clear()
-        self._report_table.setColumnCount(len(table.headers))
-        self._report_table.setHorizontalHeaderLabels(table.headers)
-        self._report_table.setRowCount(len(table.rows))
-        for r_idx, row in enumerate(table.rows):
-            for c_idx, cell in enumerate(row):
-                self._report_table.setItem(r_idx, c_idx, QTableWidgetItem(cell))
+        with table_update(self._report_table):
+            self._report_table.clear()
+            self._report_table.setColumnCount(len(table.headers))
+            self._report_table.setHorizontalHeaderLabels(table.headers)
+            self._report_table.setRowCount(len(table.rows))
+            for r_idx, row in enumerate(table.rows):
+                for c_idx, cell in enumerate(row):
+                    self._report_table.setItem(r_idx, c_idx, make_item(cell))
         self._report_table.resizeColumnsToContents()
-
-    @staticmethod
-    def _tune_table(table: QTableWidget) -> None:
-        table.setAlternatingRowColors(True)
-        table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
-        table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        table.verticalHeader().setVisible(False)
-        table.horizontalHeader().setStretchLastSection(True)

@@ -22,6 +22,12 @@ class PortMode(StrEnum):
     TRUNK = "TRUNK"
 
 
+class PortSide(StrEnum):
+    NONE = "NONE"
+    FRONT = "FRONT"
+    REAR = "REAR"
+
+
 class CableKind(StrEnum):
     COPPER = "COPPER"
     FIBER = "FIBER"
@@ -43,6 +49,8 @@ class DeviceRole(StrEnum):
     ROUTER = "ROUTER"
     AP = "AP"
     SERVER = "SERVER"
+    HYPERVISOR = "HYPERVISOR"
+    VIRTUAL_MACHINE = "VIRTUAL_MACHINE"
     WORKSTATION = "WORKSTATION"
     PATCH_PANEL = "PATCH_PANEL"
     OTHER = "OTHER"
