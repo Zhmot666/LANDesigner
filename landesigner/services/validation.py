@@ -84,24 +84,31 @@ def summary(issues: list[ValidationIssue]) -> dict[str, int]:
 
 def _check_duplicate_ips(snapshot: ProjectSnapshot) -> list[ValidationIssue]:
     issues: list[ValidationIssue] = []
-    by_addr: dict[str, list] = {}
+    # Уникальность в пределах VRF (None = глобальный / default VRF проекта).
+    by_scope: dict[tuple[str, UUID | None], list] = {}
     for ip in snapshot.ips:
-        key = ip.address.strip().casefold()
-        if not key:
+        addr = ip.address.strip().casefold()
+        if not addr:
             continue
-        by_addr.setdefault(key, []).append(ip)
-    for key, group in by_addr.items():
+        by_scope.setdefault((addr, ip.vrf_id), []).append(ip)
+    vrf_by_id = {v.id: v for v in snapshot.vrfs}
+    for (addr, vrf_id), group in by_scope.items():
         if len(group) < 2:
             continue
         hosts = ", ".join(
             inv.port_endpoint_label(snapshot, ip.port_id) if ip.port_id else "—"
             for ip in group
         )
+        if vrf_id is None:
+            scope = "глобально"
+        else:
+            vrf = vrf_by_id.get(vrf_id)
+            scope = f"VRF «{vrf.name}»" if vrf else "VRF"
         issues.append(
             ValidationIssue(
                 IssueSeverity.ERROR,
                 "duplicate_ip",
-                f"Дублирующий IP {group[0].address}: {hosts}",
+                f"Дублирующий IP {group[0].address} ({scope}): {hosts}",
                 entity_kind="ip",
                 entity_id=group[0].id,
             )

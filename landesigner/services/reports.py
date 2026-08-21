@@ -22,6 +22,7 @@ class ReportKind(StrEnum):
     PORTS = "ports"
     CABLES = "cables"
     VLANS = "vlans"
+    VRFS = "vrfs"
     RACKS = "racks"
 
 
@@ -30,6 +31,7 @@ REPORT_TITLES: dict[ReportKind, str] = {
     ReportKind.PORTS: "Порт-матрица",
     ReportKind.CABLES: "Кабели",
     ReportKind.VLANS: "VLAN map",
+    ReportKind.VRFS: "VRF / IP scope",
     ReportKind.RACKS: "Шкафы / юниты",
 }
 
@@ -51,6 +53,8 @@ def build_report(snapshot: ProjectSnapshot, kind: ReportKind) -> ReportTable:
         return _cables_report(snapshot)
     if kind == ReportKind.VLANS:
         return _vlans_report(snapshot)
+    if kind == ReportKind.VRFS:
+        return _vrfs_report(snapshot)
     if kind == ReportKind.RACKS:
         return _racks_report(snapshot)
     raise ValueError(f"Неизвестный отчёт: {kind}")
@@ -268,6 +272,43 @@ def _vlans_report(snapshot: ProjectSnapshot) -> ReportTable:
             "Tagged портов",
             "Tagged",
         ],
+        rows,
+    )
+
+
+def _vrfs_report(snapshot: ProjectSnapshot) -> ReportTable:
+    rows: list[list[str]] = []
+    for vrf in sorted(snapshot.vrfs, key=lambda v: v.name.casefold()):
+        ips = [ip for ip in snapshot.ips if ip.vrf_id == vrf.id]
+        ip_labels = [inv.ip_label(ip) for ip in sorted(ips, key=lambda i: i.address)]
+        rows.append(
+            [
+                vrf.name,
+                vrf.rd or "—",
+                vrf.description or "—",
+                str(len(ips)),
+                ", ".join(ip_labels) or "—",
+            ]
+        )
+    global_ips = [ip for ip in snapshot.ips if ip.vrf_id is None]
+    if global_ips or not rows:
+        ip_labels = [
+            inv.ip_label(ip) for ip in sorted(global_ips, key=lambda i: i.address)
+        ]
+        rows.insert(
+            0,
+            [
+                "(глобально)",
+                "—",
+                "Без VRF",
+                str(len(global_ips)),
+                ", ".join(ip_labels) or "—",
+            ],
+        )
+    return ReportTable(
+        ReportKind.VRFS,
+        REPORT_TITLES[ReportKind.VRFS],
+        ["VRF", "RD", "Описание", "IP", "Адреса"],
         rows,
     )
 

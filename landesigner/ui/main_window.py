@@ -44,6 +44,7 @@ from landesigner.ui.dialogs.inventory_dialogs import (
     RackDialog,
     VirtualSwitchDialog,
     VlanDialog,
+    VrfDialog,
     VnicHostDialog,
 )
 from landesigner.ui.dialogs.snapshot_dialog import SnapshotRestoreDialog
@@ -274,6 +275,9 @@ class MainWindow(QMainWindow):
         self._inventory_view.add_vlan_requested.connect(self._on_add_vlan)
         self._inventory_view.edit_vlan_requested.connect(self._on_edit_vlan)
         self._inventory_view.delete_vlan_requested.connect(self._on_delete_vlan)
+        self._inventory_view.add_vrf_requested.connect(self._on_add_vrf)
+        self._inventory_view.edit_vrf_requested.connect(self._on_edit_vrf)
+        self._inventory_view.delete_vrf_requested.connect(self._on_delete_vrf)
         self._inventory_view.add_ip_requested.connect(self._on_add_ip)
         self._inventory_view.edit_ip_requested.connect(self._on_edit_ip)
         self._inventory_view.delete_ip_requested.connect(self._on_delete_ip)
@@ -1677,6 +1681,74 @@ class MainWindow(QMainWindow):
         inventory_service.delete_vlan(snapshot, vlan_uuid)
         self._mark_dirty()
 
+    def _on_add_vrf(self) -> None:
+        snapshot = self._require_snapshot()
+        if snapshot is None:
+            return
+        dlg = VrfDialog(parent=self)
+        if dlg.exec() != VrfDialog.DialogCode.Accepted:
+            return
+        if not dlg.is_valid():
+            QMessageBox.warning(self, "VRF", "Укажите имя VRF.")
+            return
+        name, rd, description = dlg.values()
+        try:
+            vrf = inventory_service.add_vrf(
+                snapshot, name, rd=rd, description=description
+            )
+        except Exception as e:
+            QMessageBox.critical(self, "VRF", str(e))
+            return
+        self._mark_dirty()
+        self.statusBar().showMessage(f"Добавлен VRF {inventory_service.vrf_label(vrf)}")
+
+    def _on_edit_vrf(self, vrf_uuid: UUID) -> None:
+        snapshot = self._require_snapshot()
+        if snapshot is None:
+            return
+        vrf = next((v for v in snapshot.vrfs if v.id == vrf_uuid), None)
+        if vrf is None:
+            return
+        dlg = VrfDialog(
+            initial_name=vrf.name,
+            initial_rd=vrf.rd,
+            initial_description=vrf.description,
+            editing=True,
+            parent=self,
+        )
+        if dlg.exec() != VrfDialog.DialogCode.Accepted:
+            return
+        if not dlg.is_valid():
+            QMessageBox.warning(self, "VRF", "Укажите имя VRF.")
+            return
+        name, rd, description = dlg.values()
+        try:
+            inventory_service.update_vrf(
+                snapshot, vrf_uuid, name=name, rd=rd, description=description
+            )
+        except Exception as e:
+            QMessageBox.critical(self, "VRF", str(e))
+            return
+        self._mark_dirty()
+
+    def _on_delete_vrf(self, vrf_uuid: UUID) -> None:
+        snapshot = self._require_snapshot()
+        if snapshot is None:
+            return
+        answer = QMessageBox.question(
+            self,
+            "Удалить VRF",
+            "Удалить VRF? IP будут отвязаны в глобальный scope.",
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            inventory_service.delete_vrf(snapshot, vrf_uuid)
+        except Exception as e:
+            QMessageBox.critical(self, "VRF", str(e))
+            return
+        self._mark_dirty()
+
     def _on_add_ip(self) -> None:
         snapshot = self._require_snapshot()
         if snapshot is None:
@@ -1688,7 +1760,7 @@ class MainWindow(QMainWindow):
         if not dlg.is_valid():
             QMessageBox.warning(self, "IP", "Укажите адрес.")
             return
-        address, cidr, gateway, port_id, lag_id = dlg.values()
+        address, cidr, gateway, port_id, lag_id, vrf_id = dlg.values()
         try:
             ip = inventory_service.add_ip(
                 snapshot,
@@ -1697,6 +1769,7 @@ class MainWindow(QMainWindow):
                 gateway=gateway,
                 port_id=port_id,
                 lag_id=lag_id,
+                vrf_id=vrf_id,
             )
         except Exception as e:
             QMessageBox.critical(self, "IP", str(e))
@@ -1717,7 +1790,7 @@ class MainWindow(QMainWindow):
         if not dlg.is_valid():
             QMessageBox.warning(self, "IP", "Укажите адрес.")
             return
-        address, cidr, gateway, port_id, lag_id = dlg.values()
+        address, cidr, gateway, port_id, lag_id, vrf_id = dlg.values()
         try:
             inventory_service.update_ip(
                 snapshot,
@@ -1727,8 +1800,10 @@ class MainWindow(QMainWindow):
                 gateway=gateway,
                 port_id=port_id,
                 lag_id=lag_id,
+                vrf_id=vrf_id,
                 clear_port=port_id is None and lag_id is None,
                 clear_lag=port_id is None and lag_id is None,
+                clear_vrf=vrf_id is None,
             )
         except Exception as e:
             QMessageBox.critical(self, "IP", str(e))

@@ -28,6 +28,7 @@ from landesigner.domain.entities import (
     TopologyNode,
     VirtualSwitch,
     Vlan,
+    Vrf,
     utcnow,
 )
 from landesigner.domain.enums import (
@@ -54,6 +55,7 @@ SECTION_ORDER = (
     "device_types",
     "devices",
     "vlans",
+    "vrfs",
     "ports",
     "cables",
     "lags",
@@ -130,6 +132,7 @@ def import_from_text(text: str) -> ProjectSnapshot:
     device_types = [_load_device_type(r) for r in sections.get("device_types", [])]
     devices = [_load_device(r) for r in sections.get("devices", [])]
     vlans = [_load_vlan(r) for r in sections.get("vlans", [])]
+    vrfs = [_load_vrf(r) for r in sections.get("vrfs", [])]
     ports = [_load_port(r) for r in sections.get("ports", [])]
     cables = [_load_cable(r) for r in sections.get("cables", [])]
     lags = _load_lags(sections.get("lags", []), sections.get("lag_members", []))
@@ -157,6 +160,7 @@ def import_from_text(text: str) -> ProjectSnapshot:
         ports=ports,
         cables=cables,
         vlans=vlans,
+        vrfs=vrfs,
         lags=lags,
         virtual_switches=virtual_switches,
         port_groups=port_groups,
@@ -255,6 +259,7 @@ def _headers_for(section: str) -> list[str]:
             "host_device_id",
         ],
         "vlans": ["id", "site_id", "vlan_id", "name", "description"],
+        "vrfs": ["id", "site_id", "name", "rd", "description"],
         "ports": [
             "id",
             "device_id",
@@ -294,7 +299,16 @@ def _headers_for(section: str) -> list[str]:
         ],
         "vswitch_uplinks": ["vswitch_id", "port_id"],
         "port_groups": ["id", "vswitch_id", "name", "vlan_id", "notes"],
-        "ips": ["id", "site_id", "port_id", "lag_id", "address", "cidr", "gateway"],
+        "ips": [
+            "id",
+            "site_id",
+            "port_id",
+            "lag_id",
+            "vrf_id",
+            "address",
+            "cidr",
+            "gateway",
+        ],
         "topology_nodes": ["id", "site_id", "device_id", "x", "y"],
         "topology_links": [
             "id",
@@ -412,6 +426,17 @@ def _section_rows(snapshot: ProjectSnapshot, name: str) -> list[dict[str, str]]:
             }
             for v in snapshot.vlans
         ]
+    if name == "vrfs":
+        return [
+            {
+                "id": str(v.id),
+                "site_id": str(v.site_id),
+                "name": v.name,
+                "rd": v.rd,
+                "description": v.description,
+            }
+            for v in snapshot.vrfs
+        ]
     if name == "ports":
         return [
             {
@@ -502,6 +527,7 @@ def _section_rows(snapshot: ProjectSnapshot, name: str) -> list[dict[str, str]]:
                 "site_id": str(ip.site_id),
                 "port_id": _opt_uuid(ip.port_id),
                 "lag_id": _opt_uuid(ip.lag_id),
+                "vrf_id": _opt_uuid(ip.vrf_id),
                 "address": ip.address,
                 "cidr": ip.cidr,
                 "gateway": ip.gateway,
@@ -655,6 +681,29 @@ def _load_vlan(row: dict[str, str]) -> Vlan:
     )
 
 
+def _load_vrf(row: dict[str, str]) -> Vrf:
+    return Vrf(
+        id=_req_uuid(row, "id"),
+        site_id=_req_uuid(row, "site_id"),
+        name=_get(row, "name"),
+        rd=_get(row, "rd"),
+        description=_get(row, "description"),
+    )
+
+
+def _load_ip(row: dict[str, str]) -> IpAddress:
+    return IpAddress(
+        id=_req_uuid(row, "id"),
+        site_id=_req_uuid(row, "site_id"),
+        port_id=_opt_parse_uuid(_get(row, "port_id")),
+        lag_id=_opt_parse_uuid(_get(row, "lag_id")),
+        vrf_id=_opt_parse_uuid(_get(row, "vrf_id")),
+        address=_get(row, "address"),
+        cidr=_get(row, "cidr"),
+        gateway=_get(row, "gateway"),
+    )
+
+
 def _load_port(row: dict[str, str]) -> Port:
     tagged_raw = _get(row, "tagged_vlan_ids")
     tagged = [
@@ -694,18 +743,6 @@ def _load_cable(row: dict[str, str]) -> Cable:
         end_b_port_id=_req_uuid(row, "end_b_port_id"),
         color=_get(row, "color"),
         purpose=_get(row, "purpose"),
-    )
-
-
-def _load_ip(row: dict[str, str]) -> IpAddress:
-    return IpAddress(
-        id=_req_uuid(row, "id"),
-        site_id=_req_uuid(row, "site_id"),
-        port_id=_opt_parse_uuid(_get(row, "port_id")),
-        lag_id=_opt_parse_uuid(_get(row, "lag_id")),
-        address=_get(row, "address"),
-        cidr=_get(row, "cidr"),
-        gateway=_get(row, "gateway"),
     )
 
 

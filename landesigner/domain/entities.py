@@ -146,11 +146,23 @@ class Vlan:
 
 
 @dataclass
+class Vrf:
+    """Виртуальный маршрутизатор / VRF — scope уникальности IP."""
+
+    id: UUID = field(default_factory=uuid4)
+    site_id: UUID = field(default_factory=uuid4)
+    name: str = ""
+    rd: str = ""  # Route Distinguisher, напр. 65000:100
+    description: str = ""
+
+
+@dataclass
 class IpAddress:
     id: UUID = field(default_factory=uuid4)
     site_id: UUID = field(default_factory=uuid4)
     port_id: Optional[UUID] = None
     lag_id: Optional[UUID] = None
+    vrf_id: Optional[UUID] = None
     address: str = ""  # e.g. 10.0.0.2
     cidr: str = ""  # e.g. 24
     gateway: str = ""
@@ -234,6 +246,7 @@ class ProjectSnapshot:
     ports: list[Port] = field(default_factory=list)
     cables: list[Cable] = field(default_factory=list)
     vlans: list[Vlan] = field(default_factory=list)
+    vrfs: list[Vrf] = field(default_factory=list)
     lags: list[Lag] = field(default_factory=list)
     virtual_switches: list[VirtualSwitch] = field(default_factory=list)
     port_groups: list[PortGroup] = field(default_factory=list)

@@ -23,6 +23,7 @@ from landesigner.domain.entities import (
     Port,
     ProjectSnapshot,
     Vlan,
+    Vrf,
 )
 from landesigner.domain.enums import PortStatus, PortMedia, DeviceRole
 from landesigner.services import inventory as inventory_service
@@ -72,6 +73,9 @@ class InventoryView(QWidget):
     add_vlan_requested = Signal()
     edit_vlan_requested = Signal(object)  # UUID
     delete_vlan_requested = Signal(object)  # UUID
+    add_vrf_requested = Signal()
+    edit_vrf_requested = Signal(object)  # UUID
+    delete_vrf_requested = Signal(object)  # UUID
     add_ip_requested = Signal()
     edit_ip_requested = Signal(object)  # UUID
     delete_ip_requested = Signal(object)  # UUID
@@ -212,6 +216,7 @@ class InventoryView(QWidget):
         bottom_tabs.setDocumentMode(True)
         bottom_tabs.addTab(self._build_cables_tab(bottom_tabs), "Кабели")
         bottom_tabs.addTab(self._build_vlans_tab(bottom_tabs), "VLAN")
+        bottom_tabs.addTab(self._build_vrfs_tab(bottom_tabs), "VRF")
         bottom_tabs.addTab(self._build_ips_tab(bottom_tabs), "IP")
         bottom_tabs.addTab(self._build_lags_tab(bottom_tabs), "LAG")
         bottom_tabs.addTab(self._build_vswitch_tab(bottom_tabs), "vSwitch")
@@ -241,6 +246,7 @@ class InventoryView(QWidget):
         self._ports_by_device: dict[UUID, list[Port]] = {}
         self._cables: list[Cable] = []
         self._vlans: list[Vlan] = []
+        self._vrfs: list[Vrf] = []
         self._ips: list[IpAddress] = []
         self._lags = []
         self._vswitches = []
@@ -379,6 +385,36 @@ class InventoryView(QWidget):
         layout.addWidget(self._vlans_table)
         return panel
 
+    def _build_vrfs_tab(self, parent: QWidget) -> QWidget:
+        panel = QWidget(parent)
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(0, 8, 0, 0)
+        layout.setSpacing(8)
+        header = QHBoxLayout()
+        header.setSpacing(4)
+        header.addStretch(1)
+        self._btn_add_vrf = icon_action_button(
+            "add", "Добавить VRF", panel, role="primary"
+        )
+        self._btn_edit_vrf = icon_action_button("edit", "Изменить VRF", panel)
+        self._btn_delete_vrf = icon_action_button(
+            "delete", "Удалить VRF", panel, role="danger"
+        )
+        self._btn_add_vrf.clicked.connect(self.add_vrf_requested.emit)
+        self._btn_edit_vrf.clicked.connect(self._on_edit_vrf)
+        self._btn_delete_vrf.clicked.connect(self._on_delete_vrf)
+        header.addWidget(self._btn_add_vrf)
+        header.addWidget(self._btn_edit_vrf)
+        header.addWidget(self._btn_delete_vrf)
+        layout.addLayout(header)
+        self._vrfs_table = QTableWidget(panel)
+        tune_table(self._vrfs_table)
+        self._vrfs_table.setColumnCount(4)
+        self._vrfs_table.setHorizontalHeaderLabels(["Имя", "RD", "Описание", "IP"])
+        self._vrfs_table.itemDoubleClicked.connect(self._on_edit_vrf)
+        layout.addWidget(self._vrfs_table)
+        return panel
+
     def _build_ips_tab(self, parent: QWidget) -> QWidget:
         panel = QWidget(parent)
         layout = QVBoxLayout(panel)
@@ -403,8 +439,10 @@ class InventoryView(QWidget):
         layout.addLayout(header)
         self._ips_table = QTableWidget(panel)
         tune_table(self._ips_table)
-        self._ips_table.setColumnCount(4)
-        self._ips_table.setHorizontalHeaderLabels(["Адрес", "Префикс", "Шлюз", "Привязка"])
+        self._ips_table.setColumnCount(5)
+        self._ips_table.setHorizontalHeaderLabels(
+            ["Адрес", "Префикс", "Шлюз", "VRF", "Привязка"]
+        )
         self._ips_table.itemDoubleClicked.connect(self._on_edit_ip)
         layout.addWidget(self._ips_table)
         return panel
@@ -495,6 +533,7 @@ class InventoryView(QWidget):
             self._ports_by_device = {}
             self._cables = []
             self._vlans = []
+            self._vrfs = []
             self._ips = []
             self._lags = []
             self._vswitches = []
@@ -511,6 +550,7 @@ class InventoryView(QWidget):
         }
         self._cables = list(snapshot.cables)
         self._vlans = sorted(snapshot.vlans, key=lambda v: v.vlan_id)
+        self._vrfs = sorted(snapshot.vrfs, key=lambda v: v.name.casefold())
         self._ips = list(snapshot.ips)
         self._lags = list(snapshot.lags)
         self._vswitches = list(snapshot.virtual_switches)
@@ -521,6 +561,7 @@ class InventoryView(QWidget):
         selected_device = self.selected_device_id() if preserve_selection else None
         selected_cable = self.selected_cable_id() if preserve_selection else None
         selected_vlan = self.selected_vlan_id() if preserve_selection else None
+        selected_vrf = self.selected_vrf_id() if preserve_selection else None
         selected_ip = self.selected_ip_id() if preserve_selection else None
         selected_lag = self.selected_lag_id() if preserve_selection else None
         selected_port = self.selected_port_id() if preserve_selection else None
@@ -536,6 +577,8 @@ class InventoryView(QWidget):
                 self._cables_table.setRowCount(0)
             with table_update(self._vlans_table):
                 self._vlans_table.setRowCount(0)
+            with table_update(self._vrfs_table):
+                self._vrfs_table.setRowCount(0)
             with table_update(self._ips_table):
                 self._ips_table.setRowCount(0)
             with table_update(self._lags_table):
@@ -556,6 +599,7 @@ class InventoryView(QWidget):
         )
         cables = search_service.filter_cables(snapshot, self._cables, query)
         vlans = search_service.filter_vlans(self._vlans, query)
+        vrfs = search_service.filter_vrfs(self._vrfs, query)
         ips = search_service.filter_ips(snapshot, self._ips, query)
 
         with table_update(self._table):
@@ -625,6 +669,19 @@ class InventoryView(QWidget):
                 self._vlans_table.setItem(row_idx, 1, make_item(vlan.name))
                 self._vlans_table.setItem(row_idx, 2, make_item(vlan.description))
 
+        with table_update(self._vrfs_table):
+            self._vrfs_table.setRowCount(len(vrfs))
+            for row_idx, vrf in enumerate(vrfs):
+                ip_count = sum(1 for ip in snapshot.ips if ip.vrf_id == vrf.id)
+                self._vrfs_table.setItem(
+                    row_idx, 0, make_item(vrf.name, entity_id=vrf.id)
+                )
+                self._vrfs_table.setItem(row_idx, 1, make_item(vrf.rd or "—"))
+                self._vrfs_table.setItem(row_idx, 2, make_item(vrf.description or "—"))
+                self._vrfs_table.setItem(
+                    row_idx, 3, make_item(str(ip_count), sort_key=ip_count)
+                )
+
         with table_update(self._ips_table):
             self._ips_table.setRowCount(len(ips))
             for row_idx, ip in enumerate(ips):
@@ -635,6 +692,11 @@ class InventoryView(QWidget):
                     bind_txt = inventory_service.port_endpoint_label(snapshot, ip.port_id)
                 else:
                     bind_txt = "—"
+                if ip.vrf_id is not None:
+                    vrf = next((v for v in snapshot.vrfs if v.id == ip.vrf_id), None)
+                    vrf_txt = inventory_service.vrf_label(vrf) if vrf else "—"
+                else:
+                    vrf_txt = "(глобально)"
                 cidr_key = int(ip.cidr) if ip.cidr.isdigit() else -1
                 self._ips_table.setItem(
                     row_idx, 0, make_ip_item(ip.address, entity_id=ip.id)
@@ -643,7 +705,8 @@ class InventoryView(QWidget):
                     row_idx, 1, make_item(ip.cidr or "—", sort_key=cidr_key)
                 )
                 self._ips_table.setItem(row_idx, 2, make_ip_item(ip.gateway or "—"))
-                self._ips_table.setItem(row_idx, 3, make_item(bind_txt))
+                self._ips_table.setItem(row_idx, 3, make_item(vrf_txt))
+                self._ips_table.setItem(row_idx, 4, make_item(bind_txt))
 
         lags = list(self._lags)
         if search_service.normalize_query(query):
@@ -740,7 +803,7 @@ class InventoryView(QWidget):
         if search_service.normalize_query(query):
             self._search_hint.setText(
                 f"уст. {len(devices)} · каб. {len(cables)} · "
-                f"VLAN {len(vlans)} · IP {len(ips)} · LAG {len(lags)} · "
+                f"VLAN {len(vlans)} · VRF {len(vrfs)} · IP {len(ips)} · LAG {len(lags)} · "
                 f"vSw {len(vs_rows)}"
             )
         else:
@@ -765,6 +828,7 @@ class InventoryView(QWidget):
 
         select_row_by_id(self._cables_table, selected_cable)
         select_row_by_id(self._vlans_table, selected_vlan)
+        select_row_by_id(self._vrfs_table, selected_vrf)
         select_row_by_id(self._ips_table, selected_ip)
         select_row_by_id(self._lags_table, selected_lag)
 
@@ -776,6 +840,9 @@ class InventoryView(QWidget):
 
     def selected_vlan_id(self) -> UUID | None:
         return self._selected_id(self._vlans_table)
+
+    def selected_vrf_id(self) -> UUID | None:
+        return self._selected_id(self._vrfs_table)
 
     def selected_ip_id(self) -> UUID | None:
         return self._selected_id(self._ips_table)
@@ -977,6 +1044,16 @@ class InventoryView(QWidget):
         vlan_id = self.selected_vlan_id()
         if vlan_id is not None:
             self.delete_vlan_requested.emit(vlan_id)
+
+    def _on_edit_vrf(self) -> None:
+        vrf_id = self.selected_vrf_id()
+        if vrf_id is not None:
+            self.edit_vrf_requested.emit(vrf_id)
+
+    def _on_delete_vrf(self) -> None:
+        vrf_id = self.selected_vrf_id()
+        if vrf_id is not None:
+            self.delete_vrf_requested.emit(vrf_id)
 
     def _on_edit_ip(self) -> None:
         ip_id = self.selected_ip_id()

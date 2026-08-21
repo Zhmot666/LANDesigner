@@ -1217,6 +1217,54 @@ class VlanDialog(QDialog):
         )
 
 
+class VrfDialog(QDialog):
+    def __init__(
+        self,
+        initial_name: str = "",
+        initial_rd: str = "",
+        initial_description: str = "",
+        *,
+        editing: bool = False,
+        parent=None,
+    ) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Изменить VRF" if editing else "Добавить VRF")
+
+        layout = QVBoxLayout(self)
+        form = QFormLayout()
+        self._name = QLineEdit(self)
+        self._name.setText(initial_name)
+        self._name.setPlaceholderText("Cust-A / MGMT / …")
+        self._rd = QLineEdit(self)
+        self._rd.setText(initial_rd)
+        self._rd.setPlaceholderText("65000:100")
+        self._description = QLineEdit(self)
+        self._description.setText(initial_description)
+        self._description.setPlaceholderText("Назначение, маршрут, зона…")
+        form.addRow("Имя", self._name)
+        form.addRow("RD", self._rd)
+        form.addRow("Описание", self._description)
+        layout.addLayout(form)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        _russian_buttons(buttons)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def values(self) -> tuple[str, str, str]:
+        return (
+            self._name.text().strip(),
+            self._rd.text().strip(),
+            self._description.text().strip(),
+        )
+
+    def is_valid(self) -> bool:
+        return bool(self._name.text().strip())
+
+
 class IpDialog(QDialog):
     def __init__(
         self,
@@ -1245,6 +1293,10 @@ class IpDialog(QDialog):
         self._cidr = QLineEdit(self)
         self._cidr.setPlaceholderText("24")
         self._gateway = QLineEdit(self)
+        self._vrf = QComboBox(self)
+        self._vrf.addItem("(глобально)", None)
+        for vrf in sorted(snapshot.vrfs, key=lambda v: v.name.casefold()):
+            self._vrf.addItem(inventory_service.vrf_label(vrf), str(vrf.id))
 
         for device in snapshot.devices:
             self._device.addItem(device.hostname or str(device.id), str(device.id))
@@ -1253,6 +1305,7 @@ class IpDialog(QDialog):
         form.addRow("Устройство", self._device)
         form.addRow("Порт", self._port)
         form.addRow("LAG", self._lag)
+        form.addRow("VRF", self._vrf)
         form.addRow("Адрес", self._address)
         form.addRow("Префикс", self._cidr)
         form.addRow("Шлюз", self._gateway)
@@ -1265,6 +1318,10 @@ class IpDialog(QDialog):
             self._address.setText(ip.address)
             self._cidr.setText(ip.cidr)
             self._gateway.setText(ip.gateway)
+            if ip.vrf_id is not None:
+                vidx = self._vrf.findData(str(ip.vrf_id))
+                if vidx >= 0:
+                    self._vrf.setCurrentIndex(vidx)
             if ip.lag_id is not None:
                 lag = next((item for item in snapshot.lags if item.id == ip.lag_id), None)
                 self._bind.setCurrentIndex(self._bind.findData("lag"))
@@ -1339,7 +1396,7 @@ class IpDialog(QDialog):
         for lag in inventory_service.lags_for_device(self._snapshot, device_id):
             self._lag.addItem(lag.name, str(lag.id))
 
-    def values(self) -> tuple[str, str, str, UUID | None, UUID | None]:
+    def values(self) -> tuple[str, str, str, UUID | None, UUID | None, UUID | None]:
         mode = self._bind.currentData()
         port_id = None
         lag_id = None
@@ -1349,12 +1406,15 @@ class IpDialog(QDialog):
         elif mode == "lag":
             lag_raw = self._lag.currentData()
             lag_id = UUID(str(lag_raw)) if lag_raw is not None else None
+        vrf_raw = self._vrf.currentData()
+        vrf_id = UUID(str(vrf_raw)) if vrf_raw is not None else None
         return (
             self._address.text().strip(),
             self._cidr.text().strip(),
             self._gateway.text().strip(),
             port_id,
             lag_id,
+            vrf_id,
         )
 
     def is_valid(self) -> bool:

@@ -26,6 +26,7 @@ from landesigner.domain.entities import (
     TopologyNode,
     VirtualSwitch,
     Vlan,
+    Vrf,
 )
 from landesigner.domain.enums import (
     CableCategory,
@@ -239,6 +240,19 @@ class LocalSqliteRepository(ProjectRepository):
 
         con.execute(
             """
+            CREATE TABLE IF NOT EXISTS vrf (
+                id TEXT PRIMARY KEY NOT NULL,
+                site_id TEXT NOT NULL,
+                name TEXT NOT NULL DEFAULT '',
+                rd TEXT NOT NULL DEFAULT '',
+                description TEXT NOT NULL DEFAULT '',
+                FOREIGN KEY(site_id) REFERENCES site(id) ON DELETE CASCADE
+            )
+            """
+        )
+
+        con.execute(
+            """
             CREATE TABLE IF NOT EXISTS ip_address (
                 id TEXT PRIMARY KEY NOT NULL,
                 site_id TEXT NOT NULL,
@@ -386,6 +400,7 @@ class LocalSqliteRepository(ProjectRepository):
         self._ensure_column(con, "building", "address", "TEXT NOT NULL DEFAULT ''")
         self._ensure_column(con, "building", "notes", "TEXT NOT NULL DEFAULT ''")
         self._ensure_column(con, "ip_address", "lag_id", "TEXT")
+        self._ensure_column(con, "ip_address", "vrf_id", "TEXT")
         self._ensure_column(con, "vlan", "description", "TEXT NOT NULL DEFAULT ''")
         self._ensure_column(con, "lag", "mac", "TEXT NOT NULL DEFAULT ''")
         self._ensure_column(con, "device", "rack_u", "INTEGER")
@@ -431,6 +446,7 @@ class LocalSqliteRepository(ProjectRepository):
             con.execute("DELETE FROM cable")
             con.execute("DELETE FROM port")
             con.execute("DELETE FROM vlan")
+            con.execute("DELETE FROM vrf")
             con.execute("DELETE FROM device")
             con.execute("DELETE FROM device_type")
             con.execute("DELETE FROM rack")
@@ -762,7 +778,7 @@ class LocalSqliteRepository(ProjectRepository):
 
             ip_rows = con.execute(
                 f"""
-                SELECT id, site_id, port_id, address, cidr, gateway, lag_id
+                SELECT id, site_id, port_id, address, cidr, gateway, lag_id, vrf_id
                 FROM ip_address
                 WHERE site_id IN ({placeholders_sites})
                 """,
@@ -777,9 +793,33 @@ class LocalSqliteRepository(ProjectRepository):
                     cidr=r[4],
                     gateway=r[5],
                     lag_id=UUID(r[6]) if len(r) > 6 and r[6] is not None else None,
+                    vrf_id=UUID(r[7]) if len(r) > 7 and r[7] is not None else None,
                 )
                 for r in ip_rows
             ]
+
+            vrfs: list[Vrf] = []
+            try:
+                vrf_rows = con.execute(
+                    f"""
+                    SELECT id, site_id, name, rd, description
+                    FROM vrf
+                    WHERE site_id IN ({placeholders_sites})
+                    """,
+                    site_ids,
+                ).fetchall()
+                vrfs = [
+                    Vrf(
+                        id=UUID(r[0]),
+                        site_id=UUID(r[1]),
+                        name=r[2] or "",
+                        rd=r[3] or "",
+                        description=r[4] or "",
+                    )
+                    for r in vrf_rows
+                ]
+            except sqlite3.OperationalError:
+                vrfs = []
 
             lags: list[Lag] = []
             try:
@@ -969,6 +1009,7 @@ class LocalSqliteRepository(ProjectRepository):
                 ports=ports,
                 cables=cables,
                 vlans=vlans,
+                vrfs=vrfs,
                 lags=lags,
                 virtual_switches=virtual_switches,
                 port_groups=port_groups,
@@ -1004,6 +1045,7 @@ class LocalSqliteRepository(ProjectRepository):
             con.execute("DELETE FROM cable")
             con.execute("DELETE FROM port")
             con.execute("DELETE FROM vlan")
+            con.execute("DELETE FROM vrf")
             con.execute("DELETE FROM device")
             con.execute("DELETE FROM device_type")
             con.execute("DELETE FROM rack")
@@ -1159,6 +1201,21 @@ class LocalSqliteRepository(ProjectRepository):
                     ),
                 )
 
+            for vrf in snapshot.vrfs:
+                con.execute(
+                    """
+                    INSERT INTO vrf(id, site_id, name, rd, description)
+                    VALUES(?, ?, ?, ?, ?)
+                    """,
+                    (
+                        _uuid_str(vrf.id),
+                        _uuid_str(vrf.site_id),
+                        vrf.name,
+                        vrf.rd,
+                        vrf.description,
+                    ),
+                )
+
             for p in snapshot.ports:
                 con.execute(
                     """
@@ -1286,8 +1343,10 @@ class LocalSqliteRepository(ProjectRepository):
             for ip in snapshot.ips:
                 con.execute(
                     """
-                    INSERT INTO ip_address(id, site_id, port_id, address, cidr, gateway, lag_id)
-                    VALUES(?, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO ip_address(
+                        id, site_id, port_id, address, cidr, gateway, lag_id, vrf_id
+                    )
+                    VALUES(?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         _uuid_str(ip.id),
@@ -1297,6 +1356,7 @@ class LocalSqliteRepository(ProjectRepository):
                         ip.cidr,
                         ip.gateway,
                         _uuid_str(ip.lag_id) if ip.lag_id is not None else None,
+                        _uuid_str(ip.vrf_id) if ip.vrf_id is not None else None,
                     ),
                 )
 

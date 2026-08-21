@@ -8,6 +8,7 @@ from landesigner.domain.entities import (
     Port,
     ProjectSnapshot,
     Vlan,
+    Vrf,
 )
 from landesigner.services import inventory as inv
 from landesigner.ui.labels import (
@@ -102,7 +103,12 @@ def filter_vlans(vlans: list[Vlan], query: str) -> list[Vlan]:
     return [v for v in vlans if matches(query, v.vlan_id, v.name, v.description)]
 
 
+def filter_vrfs(vrfs: list[Vrf], query: str) -> list[Vrf]:
+    return [v for v in vrfs if matches(query, v.name, v.rd, v.description)]
+
+
 def filter_ips(snapshot: ProjectSnapshot, ips: list[IpAddress], query: str) -> list[IpAddress]:
+    vrf_by_id = {v.id: v for v in snapshot.vrfs}
     return [
         ip
         for ip in ips
@@ -112,6 +118,7 @@ def filter_ips(snapshot: ProjectSnapshot, ips: list[IpAddress], query: str) -> l
             ip.cidr,
             ip.gateway,
             inv.port_endpoint_label(snapshot, ip.port_id) if ip.port_id else "",
+            inv.vrf_label(vrf_by_id[ip.vrf_id]) if ip.vrf_id and ip.vrf_id in vrf_by_id else "",
         )
     ]
 

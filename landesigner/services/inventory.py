@@ -19,6 +19,7 @@ from landesigner.domain.entities import (
     Room,
     VirtualSwitch,
     Vlan,
+    Vrf,
 )
 from landesigner.domain.enums import (
     CableCategory,
@@ -111,6 +112,7 @@ def project_stats(snapshot: ProjectSnapshot) -> dict[str, int]:
         "cables": len(snapshot.cables),
         "types": len(snapshot.device_types),
         "vlans": len(snapshot.vlans),
+        "vrfs": len(snapshot.vrfs),
     }
 
 
@@ -1764,6 +1766,80 @@ def ip_label(ip: IpAddress) -> str:
     return ip.address
 
 
+def vrf_label(vrf: Vrf) -> str:
+    if vrf.rd:
+        return f"{vrf.name} ({vrf.rd})"
+    return vrf.name or "—"
+
+
+def add_vrf(
+    snapshot: ProjectSnapshot,
+    name: str,
+    *,
+    rd: str = "",
+    description: str = "",
+) -> Vrf:
+    site_id = _require_site(snapshot)
+    cleaned = name.strip()
+    if not cleaned:
+        raise ValueError("Укажите имя VRF")
+    key = cleaned.casefold()
+    if any(v.name.casefold() == key for v in snapshot.vrfs):
+        raise ValueError(f"VRF «{cleaned}» уже существует")
+    vrf = Vrf(
+        site_id=site_id,
+        name=cleaned,
+        rd=rd.strip(),
+        description=description.strip(),
+    )
+    snapshot.vrfs.append(vrf)
+    return vrf
+
+
+def update_vrf(
+    snapshot: ProjectSnapshot,
+    vrf_id: UUID,
+    *,
+    name: str | None = None,
+    rd: str | None = None,
+    description: str | None = None,
+) -> Vrf:
+    vrf = next((v for v in snapshot.vrfs if v.id == vrf_id), None)
+    if vrf is None:
+        raise ValueError("VRF не найден")
+    if name is not None:
+        cleaned = name.strip()
+        if not cleaned:
+            raise ValueError("Укажите имя VRF")
+        key = cleaned.casefold()
+        if any(v.name.casefold() == key and v.id != vrf_id for v in snapshot.vrfs):
+            raise ValueError(f"VRF «{cleaned}» уже существует")
+        vrf.name = cleaned
+    if rd is not None:
+        vrf.rd = rd.strip()
+    if description is not None:
+        vrf.description = description.strip()
+    return vrf
+
+
+def delete_vrf(snapshot: ProjectSnapshot, vrf_id: UUID) -> None:
+    if not any(v.id == vrf_id for v in snapshot.vrfs):
+        raise ValueError("VRF не найден")
+    # Отвязываем IP; уникальность в глобальном scope проверяем заранее.
+    detached = [ip for ip in snapshot.ips if ip.vrf_id == vrf_id]
+    for ip in detached:
+        for other in snapshot.ips:
+            if other.id == ip.id or other.vrf_id is not None:
+                continue
+            if other.address == ip.address:
+                raise ValueError(
+                    f"Нельзя удалить VRF: IP {ip.address} совпадёт с глобальным адресом"
+                )
+    for ip in detached:
+        ip.vrf_id = None
+    snapshot.vrfs = [v for v in snapshot.vrfs if v.id != vrf_id]
+
+
 def add_vlan(
     snapshot: ProjectSnapshot,
     vlan_id: int,
@@ -1903,13 +1979,15 @@ def _ensure_unique_ip(
     snapshot: ProjectSnapshot,
     address: str,
     *,
+    vrf_id: UUID | None = None,
     exclude_id: UUID | None = None,
 ) -> None:
     for ip in snapshot.ips:
         if exclude_id is not None and ip.id == exclude_id:
             continue
-        if ip.address == address:
-            raise ValueError(f"IP {address} уже используется в проекте")
+        if ip.address == address and ip.vrf_id == vrf_id:
+            scope = "в этом VRF" if vrf_id is not None else "в проекте (глобально)"
+            raise ValueError(f"IP {address} уже используется {scope}")
 
 
 def add_ip(
@@ -1920,6 +1998,7 @@ def add_ip(
     gateway: str = "",
     port_id: UUID | None = None,
     lag_id: UUID | None = None,
+    vrf_id: UUID | None = None,
 ) -> IpAddress:
     site_id = _require_site(snapshot)
     if port_id is not None and lag_id is not None:
@@ -1929,8 +2008,10 @@ def add_ip(
     if lag_id is not None:
         if not any(lag.id == lag_id for lag in snapshot.lags):
             raise ValueError("LAG не найден")
+    if vrf_id is not None and not any(v.id == vrf_id for v in snapshot.vrfs):
+        raise ValueError("VRF не найден")
     normalized = _normalize_address(address)
-    _ensure_unique_ip(snapshot, normalized)
+    _ensure_unique_ip(snapshot, normalized, vrf_id=vrf_id)
     gw = gateway.strip()
     if gw:
         _normalize_address(gw)  # validate
@@ -1938,6 +2019,7 @@ def add_ip(
         site_id=site_id,
         port_id=port_id,
         lag_id=lag_id,
+        vrf_id=vrf_id,
         address=normalized,
         cidr=_normalize_cidr(cidr, normalized),
         gateway=gw,
@@ -1955,16 +2037,28 @@ def update_ip(
     gateway: str | None = None,
     port_id: UUID | None = None,
     lag_id: UUID | None = None,
+    vrf_id: UUID | None = None,
     clear_port: bool = False,
     clear_lag: bool = False,
+    clear_vrf: bool = False,
 ) -> IpAddress:
     ip = next((item for item in snapshot.ips if item.id == ip_id), None)
     if ip is None:
         raise ValueError("IP-адрес не найден")
+    next_vrf = ip.vrf_id
+    if clear_vrf:
+        next_vrf = None
+    elif vrf_id is not None:
+        if not any(v.id == vrf_id for v in snapshot.vrfs):
+            raise ValueError("VRF не найден")
+        next_vrf = vrf_id
     if address is not None:
         normalized = _normalize_address(address)
-        _ensure_unique_ip(snapshot, normalized, exclude_id=ip_id)
+        _ensure_unique_ip(snapshot, normalized, vrf_id=next_vrf, exclude_id=ip_id)
         ip.address = normalized
+    elif next_vrf != ip.vrf_id:
+        _ensure_unique_ip(snapshot, ip.address, vrf_id=next_vrf, exclude_id=ip_id)
+    ip.vrf_id = next_vrf
     if cidr is not None:
         ip.cidr = _normalize_cidr(cidr, ip.address)
     if gateway is not None:
