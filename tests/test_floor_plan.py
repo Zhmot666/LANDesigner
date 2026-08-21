@@ -55,6 +55,47 @@ def test_path_length_m():
     assert abs(fp.path_length_m(pts, 0.1) - 15.0) < 1e-9
 
 
+def test_floor_plan_route_persist_and_cable_length(tmp_path: Path):
+    from landesigner.domain.enums import CableKind
+    from landesigner.services import import_export as csv_io
+
+    snap = _snap_with_floor()
+    floor_id = snap.floors[0].id
+    fp.set_scale(snap, floor_id, 0.1)
+    dtype = snap.device_types[0]
+    # порты уже есть у устройств
+    a = snap.devices[0]
+    b = snap.devices[1]
+    port_a = inv.ports_for_device(snap, a.id)[0]
+    port_b = inv.ports_for_device(snap, b.id)[0]
+    cable = inv.add_cable(snap, port_a.id, port_b.id, label="R1", kind=CableKind.COPPER)
+    route = fp.add_route(
+        snap,
+        floor_id,
+        [(0.0, 0.0), (100.0, 0.0), (100.0, 50.0)],
+        cable_id=cable.id,
+        label="riser",
+    )
+    assert abs(fp.route_length_m(snap, route.id) - 15.0) < 1e-9
+    length = fp.apply_route_length_to_cable(snap, route.id)
+    assert abs(length - 15.0) < 1e-9
+    assert cable.length_m == 15.0
+
+    path = tmp_path / "routes.lanproj"
+    service = ProjectService(LocalSqliteRepository())
+    service.save_project(str(path), snap)
+    loaded = service.open_project(str(path))
+    assert len(loaded.floor_plan_routes) == 1
+    assert loaded.floor_plan_routes[0].label == "riser"
+    assert len(loaded.floor_plan_routes[0].points) == 3
+    assert loaded.floor_plan_routes[0].cable_id == loaded.cables[0].id
+
+    text = csv_io.export_to_text(loaded)
+    assert "#section=floor_plan_routes" in text
+    again = csv_io.import_from_text(text)
+    assert again.floor_plan_routes[0].points[1] == (100.0, 0.0)
+
+
 def test_floor_plan_persists(tmp_path: Path):
     snap = _snap_with_floor()
     floor_id = snap.floors[0].id

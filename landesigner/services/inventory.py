@@ -215,6 +215,12 @@ def delete_building(snapshot: ProjectSnapshot, building_id: UUID) -> None:
     room_ids = {r.id for r in snapshot.rooms if r.floor_id in floor_ids}
     rack_ids = {rk.id for rk in snapshot.racks if rk.room_id in room_ids}
     _clear_device_location_refs(snapshot, room_ids=room_ids, rack_ids=rack_ids)
+    snapshot.floor_plan_assets = [
+        a for a in snapshot.floor_plan_assets if a.floor_id not in floor_ids
+    ]
+    snapshot.floor_plan_routes = [
+        r for r in snapshot.floor_plan_routes if r.floor_id not in floor_ids
+    ]
     snapshot.racks = [rk for rk in snapshot.racks if rk.id not in rack_ids]
     snapshot.rooms = [r for r in snapshot.rooms if r.id not in room_ids]
     snapshot.floors = [f for f in snapshot.floors if f.id not in floor_ids]
@@ -227,6 +233,9 @@ def delete_floor(snapshot: ProjectSnapshot, floor_id: UUID) -> None:
     _clear_device_location_refs(snapshot, room_ids=room_ids, rack_ids=rack_ids)
     snapshot.floor_plan_assets = [
         a for a in snapshot.floor_plan_assets if a.floor_id != floor_id
+    ]
+    snapshot.floor_plan_routes = [
+        r for r in snapshot.floor_plan_routes if r.floor_id != floor_id
     ]
     snapshot.racks = [rk for rk in snapshot.racks if rk.id not in rack_ids]
     snapshot.rooms = [r for r in snapshot.rooms if r.id not in room_ids]
@@ -1681,6 +1690,9 @@ def delete_cable(snapshot: ProjectSnapshot, cable_id: UUID) -> None:
     snapshot.topology_links = [
         link for link in snapshot.topology_links if link.cable_id != cable_id
     ]
+    for route in snapshot.floor_plan_routes:
+        if route.cable_id == cable_id:
+            route.cable_id = None
 
 
 def restore_cable(snapshot: ProjectSnapshot, cable: Cable) -> Cable:

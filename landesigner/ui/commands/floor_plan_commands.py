@@ -66,3 +66,82 @@ class RemoveFloorAssetCommand(QUndoCommand):
         self._snapshot.floor_plan_assets.append(self._asset)
         if self._on_changed:
             self._on_changed()
+
+
+class AddFloorRouteCommand(QUndoCommand):
+    def __init__(
+        self,
+        snapshot: ProjectSnapshot,
+        floor_id: UUID,
+        points: list[tuple[float, float]],
+        *,
+        cable_id: UUID | None = None,
+        label: str = "",
+        on_changed=None,
+    ) -> None:
+        super().__init__("Трасса на плане")
+        self._snapshot = snapshot
+        self._floor_id = floor_id
+        self._points = list(points)
+        self._cable_id = cable_id
+        self._label = label
+        self._route = None
+        self._on_changed = on_changed
+
+    @property
+    def route_id(self) -> UUID | None:
+        return None if self._route is None else self._route.id
+
+    def redo(self) -> None:
+        if self._route is None:
+            self._route = fp.add_route(
+                self._snapshot,
+                self._floor_id,
+                self._points,
+                cable_id=self._cable_id,
+                label=self._label,
+            )
+        elif not any(r.id == self._route.id for r in self._snapshot.floor_plan_routes):
+            self._snapshot.floor_plan_routes.append(self._route)
+        if self._on_changed:
+            self._on_changed()
+
+    def undo(self) -> None:
+        if self._route is None:
+            return
+        fp.remove_route(self._snapshot, self._route.id)
+        if self._on_changed:
+            self._on_changed()
+
+
+class RemoveFloorRouteCommand(QUndoCommand):
+    def __init__(
+        self,
+        snapshot: ProjectSnapshot,
+        route_id: UUID,
+        on_changed=None,
+    ) -> None:
+        super().__init__("Удаление трассы")
+        self._snapshot = snapshot
+        self._route = next(
+            (r for r in snapshot.floor_plan_routes if r.id == route_id), None
+        )
+        self._on_changed = on_changed
+        if self._route is None:
+            self.setObsolete(True)
+
+    def redo(self) -> None:
+        if self._route is None:
+            return
+        fp.remove_route(self._snapshot, self._route.id)
+        if self._on_changed:
+            self._on_changed()
+
+    def undo(self) -> None:
+        if self._route is None:
+            return
+        if any(r.id == self._route.id for r in self._snapshot.floor_plan_routes):
+            return
+        self._snapshot.floor_plan_routes.append(self._route)
+        if self._on_changed:
+            self._on_changed()

@@ -13,6 +13,7 @@ from landesigner.domain.entities import (
     DeviceType,
     Floor,
     FloorPlanAsset,
+    FloorPlanRoute,
     IpAddress,
     Lag,
     Port,
@@ -43,6 +44,22 @@ from landesigner.ports.repository import ProjectRepository
 
 def _uuid_str(value: UUID) -> str:
     return str(value)
+
+
+def _parse_route_points(raw: object) -> list[tuple[float, float]]:
+    if not raw:
+        return []
+    try:
+        data = json.loads(str(raw))
+    except (TypeError, json.JSONDecodeError):
+        return []
+    points: list[tuple[float, float]] = []
+    if not isinstance(data, list):
+        return []
+    for item in data:
+        if isinstance(item, (list, tuple)) and len(item) >= 2:
+            points.append((float(item[0]), float(item[1])))
+    return points
 
 
 def _dt_to_str(value: datetime) -> str:
@@ -392,6 +409,20 @@ class LocalSqliteRepository(ProjectRepository):
             """
         )
 
+        con.execute(
+            """
+            CREATE TABLE IF NOT EXISTS floor_plan_route (
+                id TEXT PRIMARY KEY NOT NULL,
+                floor_id TEXT NOT NULL,
+                cable_id TEXT,
+                points_json TEXT NOT NULL DEFAULT '[]',
+                label TEXT NOT NULL DEFAULT '',
+                FOREIGN KEY(floor_id) REFERENCES floor(id) ON DELETE CASCADE,
+                FOREIGN KEY(cable_id) REFERENCES cable(id) ON DELETE SET NULL
+            )
+            """
+        )
+
         self._ensure_column(con, "port", "access_vlan_id", "TEXT")
         self._ensure_column(con, "port", "mode", "TEXT NOT NULL DEFAULT 'ACCESS'")
         self._ensure_column(con, "port", "mac", "TEXT NOT NULL DEFAULT ''")
@@ -434,6 +465,7 @@ class LocalSqliteRepository(ProjectRepository):
             # Один файл = один проект.
             con.execute("PRAGMA foreign_keys = ON")
             con.execute("DELETE FROM floor_plan_asset")
+            con.execute("DELETE FROM floor_plan_route")
             con.execute("DELETE FROM topology_link")
             con.execute("DELETE FROM topology_node")
             con.execute("DELETE FROM ip_address")
@@ -997,6 +1029,31 @@ class LocalSqliteRepository(ProjectRepository):
             except sqlite3.OperationalError:
                 floor_plan_assets = []
 
+            floor_plan_routes: list[FloorPlanRoute] = []
+            try:
+                route_rows = con.execute(
+                    f"""
+                    SELECT r.id, r.floor_id, r.cable_id, r.points_json, r.label
+                    FROM floor_plan_route r
+                    JOIN floor f ON f.id = r.floor_id
+                    JOIN building b ON b.id = f.building_id
+                    WHERE b.site_id IN ({placeholders_sites})
+                    """,
+                    site_ids,
+                ).fetchall()
+                floor_plan_routes = [
+                    FloorPlanRoute(
+                        id=UUID(r[0]),
+                        floor_id=UUID(r[1]),
+                        cable_id=UUID(r[2]) if r[2] is not None else None,
+                        points=_parse_route_points(r[3]),
+                        label=r[4] or "",
+                    )
+                    for r in route_rows
+                ]
+            except sqlite3.OperationalError:
+                floor_plan_routes = []
+
             return ProjectSnapshot(
                 meta=meta,
                 sites=sites,
@@ -1017,6 +1074,7 @@ class LocalSqliteRepository(ProjectRepository):
                 topology_nodes=topology_nodes,
                 topology_links=topology_links,
                 floor_plan_assets=floor_plan_assets,
+                floor_plan_routes=floor_plan_routes,
             )
 
     def save_project(self, file_path: str, snapshot: ProjectSnapshot) -> None:
@@ -1033,6 +1091,7 @@ class LocalSqliteRepository(ProjectRepository):
             # старые project_meta, а load_project(LIMIT 1) может открыть не тот проект.
             con.execute("PRAGMA foreign_keys = ON")
             con.execute("DELETE FROM floor_plan_asset")
+            con.execute("DELETE FROM floor_plan_route")
             con.execute("DELETE FROM topology_link")
             con.execute("DELETE FROM topology_node")
             con.execute("DELETE FROM ip_address")
@@ -1405,6 +1464,24 @@ class LocalSqliteRepository(ProjectRepository):
                         float(asset.x),
                         float(asset.y),
                         float(asset.rotation),
+                    ),
+                )
+
+            for route in snapshot.floor_plan_routes:
+                con.execute(
+                    """
+                    INSERT INTO floor_plan_route(id, floor_id, cable_id, points_json, label)
+                    VALUES(?, ?, ?, ?, ?)
+                    """,
+                    (
+                        _uuid_str(route.id),
+                        _uuid_str(route.floor_id),
+                        _uuid_str(route.cable_id) if route.cable_id is not None else None,
+                        json.dumps(
+                            [[float(x), float(y)] for x, y in route.points],
+                            separators=(",", ":"),
+                        ),
+                        route.label,
                     ),
                 )
 

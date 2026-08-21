@@ -15,6 +15,7 @@ from landesigner.domain.entities import (
     DeviceType,
     Floor,
     FloorPlanAsset,
+    FloorPlanRoute,
     IpAddress,
     Lag,
     Port,
@@ -67,6 +68,7 @@ SECTION_ORDER = (
     "topology_nodes",
     "topology_links",
     "floor_plan_assets",
+    "floor_plan_routes",
 )
 
 
@@ -147,6 +149,9 @@ def import_from_text(text: str) -> ProjectSnapshot:
     floor_plan_assets = [
         _load_floor_plan_asset(r) for r in sections.get("floor_plan_assets", [])
     ]
+    floor_plan_routes = [
+        _load_floor_plan_route(r) for r in sections.get("floor_plan_routes", [])
+    ]
 
     return ProjectSnapshot(
         meta=meta,
@@ -168,6 +173,7 @@ def import_from_text(text: str) -> ProjectSnapshot:
         topology_nodes=topology_nodes,
         topology_links=topology_links,
         floor_plan_assets=floor_plan_assets,
+        floor_plan_routes=floor_plan_routes,
     )
 
 
@@ -318,6 +324,7 @@ def _headers_for(section: str) -> list[str]:
             "cable_id",
         ],
         "floor_plan_assets": ["id", "floor_id", "device_id", "x", "y", "rotation"],
+        "floor_plan_routes": ["id", "floor_id", "cable_id", "points", "label"],
     }
     return mapping[section]
 
@@ -567,6 +574,17 @@ def _section_rows(snapshot: ProjectSnapshot, name: str) -> list[dict[str, str]]:
                 "rotation": _fmt_float(a.rotation),
             }
             for a in snapshot.floor_plan_assets
+        ]
+    if name == "floor_plan_routes":
+        return [
+            {
+                "id": str(r.id),
+                "floor_id": str(r.floor_id),
+                "cable_id": _opt_uuid(r.cable_id),
+                "points": _fmt_route_points(r.points),
+                "label": r.label,
+            }
+            for r in snapshot.floor_plan_routes
         ]
     raise CsvFormatError(f"Неизвестная секция: {name}")
 
@@ -828,6 +846,37 @@ def _load_topology_link(row: dict[str, str]) -> TopologyLink:
     )
 
 
+
+def _fmt_route_points(points: list[tuple[float, float]]) -> str:
+    return ";".join(f"{_fmt_float(x)},{_fmt_float(y)}" for x, y in points)
+
+
+def _parse_route_points(raw: str) -> list[tuple[float, float]]:
+    points: list[tuple[float, float]] = []
+    for part in (raw or "").split(";"):
+        part = part.strip()
+        if not part:
+            continue
+        xs, _, ys = part.partition(",")
+        if not ys:
+            continue
+        try:
+            points.append((float(xs.replace(",", ".")), float(ys.replace(",", "."))))
+        except ValueError:
+            continue
+    return points
+
+
+def _load_floor_plan_route(row: dict[str, str]) -> FloorPlanRoute:
+    return FloorPlanRoute(
+        id=_req_uuid(row, "id"),
+        floor_id=_req_uuid(row, "floor_id"),
+        cable_id=_opt_parse_uuid(_get(row, "cable_id")),
+        points=_parse_route_points(_get(row, "points")),
+        label=_get(row, "label"),
+    )
+
+
 def _load_floor_plan_asset(row: dict[str, str]) -> FloorPlanAsset:
     return FloorPlanAsset(
         id=_req_uuid(row, "id"),
@@ -910,3 +959,4 @@ def _parse_dt(value: str) -> datetime | None:
         return datetime.fromisoformat(value)
     except ValueError as exc:
         raise CsvFormatError(f"Некорректная дата: {value!r}") from exc
+

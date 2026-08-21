@@ -34,10 +34,12 @@ from PySide6.QtWidgets import (
 from landesigner.domain.entities import ProjectSnapshot
 from landesigner.services import floor_plan as fp
 from landesigner.ui.commands.floor_plan_commands import (
+    AddFloorRouteCommand,
     MoveFloorAssetCommand,
     RemoveFloorAssetCommand,
+    RemoveFloorRouteCommand,
 )
-from landesigner.ui.widgets.floor_plan_items import FloorDeviceItem
+from landesigner.ui.widgets.floor_plan_items import FloorDeviceItem, FloorRouteItem
 
 
 class FloorPlanScene(QGraphicsScene):
@@ -64,11 +66,12 @@ class FloorPlanScene(QGraphicsScene):
 
 
 class FloorPlanView(QWidget):
-    """План этажа: подложка, маркеры устройств, масштаб, измерение трассы."""
+    """План этажа: подложка, маркеры, сохранённые трассы, масштаб."""
 
     plan_changed = Signal()
     device_selected = Signal(object)  # UUID | None
-    measure_finished = Signal(float)  # длина в метрах
+    measure_finished = Signal(float)  # длина в метрах (совместимость)
+    route_finished = Signal(object, float)  # route_id, length_m
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -76,6 +79,7 @@ class FloorPlanView(QWidget):
         self._project_file: str | None = None
         self._floor_id: UUID | None = None
         self._markers: dict[UUID, FloorDeviceItem] = {}
+        self._routes: dict[UUID, FloorRouteItem] = {}
         self._undo = QUndoStack(self)
         self._panning = False
         self._pan_start = QPoint()
@@ -99,9 +103,9 @@ class FloorPlanView(QWidget):
 
         self._btn_bg = QPushButton("Подложка…", self)
         self._btn_place = QPushButton("Расставить", self)
-        self._btn_measure = QPushButton("Измерить", self)
+        self._btn_measure = QPushButton("Трасса", self)
         self._btn_measure.setCheckable(True)
-        self._btn_delete_marker = QPushButton("Убрать маркер", self)
+        self._btn_delete_marker = QPushButton("Удалить", self)
         self._btn_delete_marker.setEnabled(False)
         self._btn_fit = QPushButton("Вписать", self)
         self._btn_undo = QPushButton("Отменить", self)
@@ -109,7 +113,7 @@ class FloorPlanView(QWidget):
         self._btn_bg.clicked.connect(self._import_background)
         self._btn_place.clicked.connect(self._place_devices)
         self._btn_measure.toggled.connect(self._on_measure_toggled)
-        self._btn_delete_marker.clicked.connect(self._delete_selected_marker)
+        self._btn_delete_marker.clicked.connect(self._delete_selected)
         self._btn_fit.clicked.connect(self.fit_content)
         self._btn_undo.clicked.connect(self._undo.undo)
         self._btn_redo.clicked.connect(self._undo.redo)
@@ -139,7 +143,7 @@ class FloorPlanView(QWidget):
         self._scale.valueChanged.connect(self._on_scale_changed)
         scale_row.addWidget(self._scale)
         self._hint = QLabel(
-            "Выберите этаж · подложка · перетащите маркеры · Измерить — клики, Enter — готово",
+            "Выберите этаж · подложка · маркеры · Трасса — клики, Enter — сохранить",
             self,
         )
         self._hint.setObjectName("PanelSubtitle")
@@ -173,7 +177,7 @@ class FloorPlanView(QWidget):
         QShortcut(QKeySequence(Qt.Key.Key_Return), self, activated=self._finish_measure)
         QShortcut(QKeySequence(Qt.Key.Key_Enter), self, activated=self._finish_measure)
         QShortcut(QKeySequence(Qt.Key.Key_Escape), self, activated=self._cancel_measure)
-        QShortcut(QKeySequence(Qt.Key.Key_Delete), self, activated=self._delete_selected_marker)
+        QShortcut(QKeySequence(Qt.Key.Key_Delete), self, activated=self._delete_selected)
 
     def undo(self) -> None:
         self._undo.undo()
@@ -196,6 +200,10 @@ class FloorPlanView(QWidget):
         self._undo.clear()
         self._cancel_measure()
         self._reload_floors(prefer=prev)
+        self._rebuild()
+
+    def refresh(self) -> None:
+        """Перерисовать текущий этаж без сброса Undo."""
         self._rebuild()
 
     def select_floor(self, floor_id: UUID | None) -> None:
@@ -376,26 +384,6 @@ class FloorPlanView(QWidget):
             self._rebuild()
             self.plan_changed.emit()
 
-    def _delete_selected_marker(self) -> None:
-        if self._snapshot is None or self._measure_mode:
-            return
-        asset_id = None
-        for item in self._scene.selectedItems():
-            if isinstance(item, FloorDeviceItem):
-                asset_id = item.asset_id
-                break
-        if asset_id is None:
-            return
-        cmd = RemoveFloorAssetCommand(
-            self._snapshot,
-            asset_id,
-            on_changed=self._rebuild,
-        )
-        if cmd.isObsolete():
-            return
-        self._undo.push(cmd)
-        self.plan_changed.emit()
-
     def _on_measure_toggled(self, checked: bool) -> None:
         self._measure_mode = checked
         self._clear_measure_graphics()
@@ -403,13 +391,13 @@ class FloorPlanView(QWidget):
         if checked:
             self._view.setDragMode(QGraphicsView.DragMode.NoDrag)
             self._view.setCursor(Qt.CursorShape.CrossCursor)
-            self._hint.setText("Измерение: клики по трассе, Enter — длина, Esc — отмена")
+            self._hint.setText("Трасса: клики по точкам, Enter — сохранить, Esc — отмена")
             self._measure_label.setText("")
         else:
             self._view.setDragMode(QGraphicsView.DragMode.RubberBandDrag)
             self._view.unsetCursor()
             self._hint.setText(
-                "Выберите этаж · подложка · перетащите маркеры · Измерить — клики, Enter — готово"
+                "Выберите этаж · подложка · маркеры · Трасса — клики, Enter — сохранить"
             )
 
     def _cancel_measure(self) -> None:
@@ -435,12 +423,26 @@ class FloorPlanView(QWidget):
             return
         if self._snapshot is None or self._floor_id is None:
             return
-        floor = fp.get_floor(self._snapshot, self._floor_id)
         pts = [(p.x(), p.y()) for p in self._measure_points]
+        if len(pts) < 2:
+            QMessageBox.information(self, "Трасса", "Нужны минимум две точки.")
+            return
+        floor = fp.get_floor(self._snapshot, self._floor_id)
         length_m = fp.path_length_m(pts, floor.scale_m_per_px)
+        cmd = AddFloorRouteCommand(
+            self._snapshot,
+            self._floor_id,
+            pts,
+            on_changed=self._rebuild,
+        )
+        self._undo.push(cmd)
         self._measure_label.setText(f"Длина: {length_m:.2f} м")
-        self.measure_finished.emit(length_m)
+        self.plan_changed.emit()
+        route_id = cmd.route_id
         self._btn_measure.setChecked(False)
+        if route_id is not None:
+            self.route_finished.emit(route_id, length_m)
+            self.measure_finished.emit(length_m)
 
     def _update_measure_label(self) -> None:
         if not self._measure_points or self._snapshot is None or self._floor_id is None:
@@ -455,6 +457,39 @@ class FloorPlanView(QWidget):
             self._scene.removeItem(line)
         self._measure_lines.clear()
 
+    def _delete_selected(self) -> None:
+        if self._snapshot is None or self._measure_mode:
+            return
+        route_id = None
+        asset_id = None
+        for item in self._scene.selectedItems():
+            if isinstance(item, FloorRouteItem):
+                route_id = item.route_id
+                break
+            if isinstance(item, FloorDeviceItem):
+                asset_id = item.asset_id
+                break
+        if route_id is not None:
+            cmd = RemoveFloorRouteCommand(
+                self._snapshot, route_id, on_changed=self._rebuild
+            )
+            if cmd.isObsolete():
+                return
+            self._undo.push(cmd)
+            self.plan_changed.emit()
+            return
+        if asset_id is None:
+            return
+        cmd = RemoveFloorAssetCommand(
+            self._snapshot,
+            asset_id,
+            on_changed=self._rebuild,
+        )
+        if cmd.isObsolete():
+            return
+        self._undo.push(cmd)
+        self.plan_changed.emit()
+
     def _rebuild(self) -> None:
         if self._rebuild_guard:
             return
@@ -468,6 +503,7 @@ class FloorPlanView(QWidget):
 
             self._scene.clear()
             self._markers.clear()
+            self._routes.clear()
             self._bg_item = None
             self._measure_lines.clear()
             self._measure_points.clear()
@@ -495,6 +531,23 @@ class FloorPlanView(QWidget):
                         self._scene.setSceneRect(
                             self._bg_item.boundingRect().adjusted(-100, -100, 100, 100)
                         )
+
+            cables = {c.id: c for c in self._snapshot.cables}
+            for route in fp.routes_for_floor(self._snapshot, self._floor_id):
+                cable = cables.get(route.cable_id) if route.cable_id else None
+                cable_label = ""
+                if cable is not None:
+                    cable_label = cable.label or "кабель"
+                length = fp.path_length_m(route.points, floor.scale_m_per_px)
+                item = FloorRouteItem(
+                    route.id,
+                    route.points,
+                    label=route.label,
+                    length_m=length,
+                    cable_label=cable_label,
+                )
+                self._scene.addItem(item)
+                self._routes[route.id] = item
 
             devices = {d.id: d for d in self._snapshot.devices}
             for asset in fp.assets_for_floor(self._snapshot, self._floor_id):
@@ -554,9 +607,13 @@ class FloorPlanView(QWidget):
         if self._suppress_selection or self._rebuild_guard:
             return
         device_id = None
+        can_delete = False
         for item in self._scene.selectedItems():
+            if isinstance(item, FloorRouteItem):
+                can_delete = True
             if isinstance(item, FloorDeviceItem):
                 device_id = item.device_id
+                can_delete = True
                 break
-        self._btn_delete_marker.setEnabled(device_id is not None and not self._measure_mode)
+        self._btn_delete_marker.setEnabled(can_delete and not self._measure_mode)
         self.device_selected.emit(device_id)

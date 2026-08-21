@@ -7,6 +7,7 @@ from PySide6.QtGui import QBrush, QColor, QFont, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (
     QGraphicsEllipseItem,
     QGraphicsItem,
+    QGraphicsPathItem,
     QGraphicsTextItem,
     QStyleOptionGraphicsItem,
     QWidget,
@@ -89,3 +90,50 @@ class FloorDeviceItem(QGraphicsEllipseItem):
             painter.setPen(QPen(QColor(47, 124, 133, 100), 6.0))
             painter.setBrush(Qt.BrushStyle.NoBrush)
             painter.drawEllipse(self.rect().adjusted(-3, -3, 3, 3))
+
+
+class FloorRouteItem(QGraphicsPathItem):
+    """Сохранённая полилиния трассы на плане."""
+
+    def __init__(
+        self,
+        route_id: UUID,
+        points: list[tuple[float, float]],
+        *,
+        label: str = "",
+        length_m: float | None = None,
+        cable_label: str = "",
+    ) -> None:
+        super().__init__()
+        self.route_id = route_id
+        path = QPainterPath()
+        if points:
+            path.moveTo(points[0][0], points[0][1])
+            for x, y in points[1:]:
+                path.lineTo(x, y)
+        self.setPath(path)
+        self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, True)
+        self.setZValue(1)
+        self._accent = QColor("#c45c26")
+        tip_parts = []
+        if label:
+            tip_parts.append(label)
+        if cable_label:
+            tip_parts.append(cable_label)
+        if length_m is not None:
+            tip_parts.append(f"{length_m:.2f} м")
+        self.setToolTip(" · ".join(tip_parts) if tip_parts else "Трасса")
+        self.setPen(QPen(self._accent, 2.5, Qt.PenStyle.SolidLine))
+
+    def paint(
+        self,
+        painter: QPainter,
+        option: QStyleOptionGraphicsItem,
+        widget: QWidget | None = None,
+    ) -> None:
+        selected = self.isSelected()
+        painter.setPen(
+            QPen(self._accent, 4.0 if selected else 2.5, Qt.PenStyle.SolidLine)
+        )
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawPath(self.path())

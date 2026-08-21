@@ -234,6 +234,17 @@ class FloorPlanAsset:
 
 
 @dataclass
+class FloorPlanRoute:
+    """Полилиния трассы на плане этажа (опционально привязана к кабелю)."""
+
+    id: UUID = field(default_factory=uuid4)
+    floor_id: UUID = field(default_factory=uuid4)
+    cable_id: Optional[UUID] = None
+    points: list[tuple[float, float]] = field(default_factory=list)
+    label: str = ""
+
+
+@dataclass
 class ProjectSnapshot:
     meta: ProjectMeta
     sites: list[Site] = field(default_factory=list)
@@ -254,4 +265,5 @@ class ProjectSnapshot:
     topology_nodes: list[TopologyNode] = field(default_factory=list)
     topology_links: list[TopologyLink] = field(default_factory=list)
     floor_plan_assets: list[FloorPlanAsset] = field(default_factory=list)
+    floor_plan_routes: list[FloorPlanRoute] = field(default_factory=list)
 

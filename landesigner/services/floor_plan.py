@@ -6,7 +6,7 @@ from uuid import UUID
 
 from PySide6.QtGui import QImage
 
-from landesigner.domain.entities import Device, Floor, FloorPlanAsset, ProjectSnapshot
+from landesigner.domain.entities import Device, Floor, FloorPlanAsset, FloorPlanRoute, ProjectSnapshot
 
 MAX_PLAN_SIDE_PX = 4096
 LAYOUT_STEP = 80.0
@@ -204,6 +204,12 @@ def remove_asset(snapshot: ProjectSnapshot, asset_id: UUID) -> None:
     ]
 
 
+def remove_routes_for_floor(snapshot: ProjectSnapshot, floor_id: UUID) -> None:
+    snapshot.floor_plan_routes = [
+        r for r in snapshot.floor_plan_routes if r.floor_id != floor_id
+    ]
+
+
 def path_length_px(points: list[tuple[float, float]]) -> float:
     if len(points) < 2:
         return 0.0
@@ -215,6 +221,76 @@ def path_length_px(points: list[tuple[float, float]]) -> float:
 
 def path_length_m(points: list[tuple[float, float]], scale_m_per_px: float) -> float:
     return path_length_px(points) * float(scale_m_per_px)
+
+
+def routes_for_floor(snapshot: ProjectSnapshot, floor_id: UUID) -> list[FloorPlanRoute]:
+    return [r for r in snapshot.floor_plan_routes if r.floor_id == floor_id]
+
+
+def add_route(
+    snapshot: ProjectSnapshot,
+    floor_id: UUID,
+    points: list[tuple[float, float]],
+    *,
+    cable_id: UUID | None = None,
+    label: str = "",
+) -> FloorPlanRoute:
+    get_floor(snapshot, floor_id)
+    cleaned = [(float(x), float(y)) for x, y in points]
+    if len(cleaned) < 2:
+        raise ValueError("Трасса должна содержать минимум 2 точки")
+    if cable_id is not None and not any(c.id == cable_id for c in snapshot.cables):
+        raise ValueError("Кабель не найден")
+    route = FloorPlanRoute(
+        floor_id=floor_id,
+        cable_id=cable_id,
+        points=cleaned,
+        label=label.strip(),
+    )
+    snapshot.floor_plan_routes.append(route)
+    return route
+
+
+def set_route_cable(
+    snapshot: ProjectSnapshot,
+    route_id: UUID,
+    cable_id: UUID | None,
+) -> FloorPlanRoute:
+    route = next((r for r in snapshot.floor_plan_routes if r.id == route_id), None)
+    if route is None:
+        raise ValueError("Трасса не найдена")
+    if cable_id is not None and not any(c.id == cable_id for c in snapshot.cables):
+        raise ValueError("Кабель не найден")
+    route.cable_id = cable_id
+    return route
+
+
+def remove_route(snapshot: ProjectSnapshot, route_id: UUID) -> None:
+    snapshot.floor_plan_routes = [
+        r for r in snapshot.floor_plan_routes if r.id != route_id
+    ]
+
+
+def route_length_m(snapshot: ProjectSnapshot, route_id: UUID) -> float:
+    route = next((r for r in snapshot.floor_plan_routes if r.id == route_id), None)
+    if route is None:
+        raise ValueError("Трасса не найдена")
+    floor = get_floor(snapshot, route.floor_id)
+    return path_length_m(route.points, floor.scale_m_per_px)
+
+
+def apply_route_length_to_cable(snapshot: ProjectSnapshot, route_id: UUID) -> float:
+    """Записать длину трассы в привязанный кабель. Возвращает длину в метрах."""
+    from landesigner.services import inventory as inv
+
+    route = next((r for r in snapshot.floor_plan_routes if r.id == route_id), None)
+    if route is None:
+        raise ValueError("Трасса не найдена")
+    if route.cable_id is None:
+        raise ValueError("К трассе не привязан кабель")
+    length = route_length_m(snapshot, route_id)
+    inv.update_cable(snapshot, route.cable_id, length_m=round(length, 3))
+    return length
 
 
 def floor_label(snapshot: ProjectSnapshot, floor_id: UUID) -> str:

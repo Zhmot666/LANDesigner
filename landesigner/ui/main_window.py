@@ -305,7 +305,7 @@ class MainWindow(QMainWindow):
         self._inventory_view.device_selection_changed.connect(self._on_inventory_device_selected)
         self._floor_plan_view.plan_changed.connect(self._on_floor_plan_changed)
         self._floor_plan_view.device_selected.connect(self._on_floor_plan_device_selected)
-        self._floor_plan_view.measure_finished.connect(self._on_measure_finished)
+        self._floor_plan_view.route_finished.connect(self._on_route_finished)
         self._rack_view.rack_changed.connect(self._on_rack_changed)
         self._rack_view.device_selected.connect(self._on_rack_device_selected)
         self._site_tree.selection_changed.connect(self._on_tree_selection_changed)
@@ -514,41 +514,52 @@ class MainWindow(QMainWindow):
         self._update_edit_actions()
         self._device_card.set_snapshot(self._active_snapshot)
 
-    def _on_measure_finished(self, length_m: float) -> None:
+    def _on_route_finished(self, route_id: object, length_m: float) -> None:
         snapshot = self._require_snapshot()
-        if snapshot is None or not snapshot.cables:
-            self.statusBar().showMessage(f"Измерено: {length_m:.2f} м")
+        if snapshot is None:
+            return
+        if not isinstance(route_id, UUID):
+            self.statusBar().showMessage(f"Трасса: {length_m:.2f} м")
+            return
+        if not snapshot.cables:
+            self.statusBar().showMessage(f"Трасса сохранена: {length_m:.2f} м")
             return
         answer = QMessageBox.question(
             self,
             "Длина трассы",
-            f"Измерено {length_m:.2f} м.\nЗаписать длину в выбранный кабель инвентаря?",
+            f"Трасса сохранена ({length_m:.2f} м).\n"
+            "Привязать к выбранному кабелю и записать длину?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
         if answer != QMessageBox.StandardButton.Yes:
-            self.statusBar().showMessage(f"Измерено: {length_m:.2f} м")
+            self.statusBar().showMessage(f"Трасса сохранена: {length_m:.2f} м")
             return
         cable_id = self._inventory_view.selected_cable_id()
         if cable_id is None:
             QMessageBox.information(
                 self,
                 "Длина трассы",
-                "Выберите кабель на вкладке «Инвентарь», затем повторите измерение.",
+                "Выберите кабель на вкладке «Инвентарь», затем нарисуйте трассу снова "
+                "или привяжите кабель позже.",
             )
-            self.statusBar().showMessage(f"Измерено: {length_m:.2f} м (кабель не выбран)")
+            self.statusBar().showMessage(f"Трасса сохранена: {length_m:.2f} м (кабель не выбран)")
             return
         try:
-            inventory_service.update_cable(
-                snapshot,
-                cable_id,
-                length_m=length_m,
-            )
+            from landesigner.services import floor_plan as floor_plan_svc
+
+            floor_plan_svc.set_route_cable(snapshot, route_id, cable_id)
+            floor_plan_svc.apply_route_length_to_cable(snapshot, route_id)
         except Exception as e:
-            QMessageBox.critical(self, "Кабель", str(e))
+            QMessageBox.critical(self, "Трасса", str(e))
             return
         self._mark_dirty()
+        self._floor_plan_view.refresh()
         self.statusBar().showMessage(f"Длина кабеля обновлена: {length_m:.2f} м")
+
+    def _on_measure_finished(self, length_m: float) -> None:
+        # Совместимость: длина уже обрабатывается в _on_route_finished.
+        self.statusBar().showMessage(f"Трасса: {length_m:.2f} м")
 
     def _on_tree_selection_changed(self, kind: object, obj_id: object) -> None:
         if kind == TreeKind.FLOOR and isinstance(obj_id, UUID):
