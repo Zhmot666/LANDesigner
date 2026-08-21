@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QMessageBox,
+    QPlainTextEdit,
     QPushButton,
     QVBoxLayout,
 )
@@ -112,7 +113,7 @@ class RemoteProjectsDialog(QDialog):
 
 
 class SyncConflictDialog(QDialog):
-    """Минимальное разрешение конфликта: оставить локальное / принять серверное / принудительный push."""
+    """Разрешение конфликта: оставить локальное / принять серверное / force push + diff."""
 
     KEEP_LOCAL = "keep_local"
     TAKE_REMOTE = "take_remote"
@@ -124,14 +125,22 @@ class SyncConflictDialog(QDialog):
         title: str,
         message: str,
         allow_force_push: bool,
+        details: str = "",
         parent=None,
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle(title)
-        self.resize(480, 200)
+        self.resize(640, 420 if details else 200)
         self.choice: str | None = None
         layout = QVBoxLayout(self)
         layout.addWidget(QLabel(message, self))
+        if details.strip():
+            layout.addWidget(QLabel("Сравнение локального и серверного:", self))
+            viewer = QPlainTextEdit(self)
+            viewer.setReadOnly(True)
+            viewer.setPlainText(details.strip())
+            viewer.setMinimumHeight(180)
+            layout.addWidget(viewer, stretch=1)
         row = QHBoxLayout()
         btn_keep = QPushButton("Оставить локальное", self)
         btn_remote = QPushButton("Принять серверное", self)

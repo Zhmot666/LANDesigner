@@ -932,6 +932,19 @@ class MainWindow(QMainWindow):
 
     def _resolve_push_conflict(self, error: RemoteConflictError) -> None:
         remote = error.remote
+        snapshot = self._require_snapshot()
+        details = ""
+        if snapshot is not None and self._active_file is not None:
+            try:
+                client = self._remote_client()
+                state = sync_svc.load_sync_state(self._active_file)
+                if state is not None:
+                    blob = client.get_project(state.project_uuid)
+                    details = sync_svc.conflict_diff_for_blob(
+                        snapshot, blob.data
+                    ).as_text()
+            except Exception as e:
+                details = f"(Не удалось загрузить серверный проект для сравнения: {e})"
         dialog = SyncConflictDialog(
             title="Конфликт Push",
             message=(
@@ -940,6 +953,7 @@ class MainWindow(QMainWindow):
                 "или принудительно перезаписать сервер?"
             ),
             allow_force_push=True,
+            details=details,
             parent=self,
         )
         if dialog.exec() != SyncConflictDialog.DialogCode.Accepted or dialog.choice is None:

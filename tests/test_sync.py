@@ -187,6 +187,38 @@ def test_status_label_local_and_synced(tmp_path: Path):
     assert "синхронизирован" in label
 
 
+def test_conflict_diff_compares_devices(tmp_path: Path):
+    from landesigner.domain.enums import DeviceRole
+    from landesigner.services import inventory as inv
+
+    path, local = _make_lanproj(tmp_path, "DiffLocal")
+    dtype = inv.add_device_type(
+        local, vendor="X", model="Y", role=DeviceRole.SWITCH, port_count=1
+    )
+    inv.add_device(local, dtype.id, "sw-local")
+    inv.add_device(local, dtype.id, "sw-both")
+    ProjectService(LocalSqliteRepository()).save_project(path, local)
+
+    remote_path = tmp_path / "DiffRemote.lanproj"
+    remote = ProjectService(LocalSqliteRepository()).open_project(path)
+    # remove local-only, rename shared, add remote-only
+    both = next(d for d in remote.devices if d.hostname == "sw-both")
+    local_only = next(d for d in remote.devices if d.hostname == "sw-local")
+    inv.delete_device(remote, local_only.id)
+    both.hostname = "sw-renamed"
+    inv.add_device(remote, dtype.id, "sw-remote")
+    remote.meta.revision = 9
+    remote.meta.name = "DiffRemote"
+    ProjectService(LocalSqliteRepository()).save_project(str(remote_path), remote)
+
+    remote_loaded = sync_svc.open_lanproj_bytes(remote_path.read_bytes())
+    text = sync_svc.compare_snapshots(local, remote_loaded).as_text()
+    assert "rev 1" in text and "rev 9" in text
+    assert "sw-local" in text
+    assert "sw-remote" in text
+    assert "sw-both" in text and "sw-renamed" in text
+
+
 def test_fastapi_http_roundtrip(tmp_path: Path):
     fastapi = pytest.importorskip("fastapi")
     from fastapi.testclient import TestClient

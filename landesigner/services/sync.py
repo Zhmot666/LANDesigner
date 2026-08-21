@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import json
+import tempfile
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from uuid import UUID
 
+from landesigner.adapters.local_sqlite.repository import LocalSqliteRepository
 from landesigner.domain.entities import ProjectSnapshot
 from landesigner.ports.remote import (
     RemoteConflictError,
@@ -13,6 +15,7 @@ from landesigner.ports.remote import (
     RemoteProjectInfo,
     RemoteRepository,
 )
+from landesigner.services.project import ProjectService
 
 
 @dataclass
@@ -27,6 +30,16 @@ class SyncState:
     @property
     def project_uuid(self) -> UUID:
         return UUID(self.project_id)
+
+
+@dataclass(frozen=True)
+class ConflictDiff:
+    """Краткое сравнение локального и серверного снимков для UI конфликта."""
+
+    lines: tuple[str, ...]
+
+    def as_text(self) -> str:
+        return "\n".join(self.lines)
 
 
 def sync_sidecar_path(file_path: str | Path) -> Path:
@@ -190,3 +203,111 @@ def pull_project(
 
 def list_remote_projects(remote: RemoteRepository) -> list[RemoteProjectInfo]:
     return remote.list_projects()
+
+
+def open_lanproj_bytes(data: bytes) -> ProjectSnapshot:
+    """Открыть .lanproj из blob’а (для сравнения при конфликте)."""
+    with tempfile.TemporaryDirectory(
+        prefix="ld_sync_", ignore_cleanup_errors=True
+    ) as tmp:
+        path = Path(tmp) / "project.lanproj"
+        path.write_bytes(data)
+        return ProjectService(LocalSqliteRepository()).open_project(str(path))
+
+
+def _counts(snapshot: ProjectSnapshot) -> dict[str, int]:
+    return {
+        "devices": len(snapshot.devices),
+        "cables": len(snapshot.cables),
+        "vlans": len(snapshot.vlans),
+        "ips": len(snapshot.ips),
+        "racks": len(snapshot.racks),
+        "routes": len(snapshot.floor_plan_routes),
+    }
+
+
+def _fmt_counts(counts: dict[str, int]) -> str:
+    return (
+        f"устройств {counts['devices']} · кабелей {counts['cables']} · "
+        f"VLAN {counts['vlans']} · IP {counts['ips']} · шкафов {counts['racks']}"
+    )
+
+
+def compare_snapshots(
+    local: ProjectSnapshot,
+    remote: ProjectSnapshot,
+) -> ConflictDiff:
+    """Сводка различий local vs remote (мета, счётчики, hostname по id)."""
+    lines: list[str] = []
+    local_c = _counts(local)
+    remote_c = _counts(remote)
+    lines.append(
+        f"Локально: «{local.meta.name}» rev {local.meta.revision} · {_fmt_counts(local_c)}"
+    )
+    lines.append(
+        f"Сервер:   «{remote.meta.name}» rev {remote.meta.revision} · {_fmt_counts(remote_c)}"
+    )
+    if local.meta.name != remote.meta.name:
+        lines.append(f"Имя проекта: «{local.meta.name}» ↔ «{remote.meta.name}»")
+    if local.meta.revision != remote.meta.revision:
+        lines.append(
+            f"Revision: local {local.meta.revision} / remote {remote.meta.revision}"
+        )
+
+    for key, label in (
+        ("devices", "устройства"),
+        ("cables", "кабели"),
+        ("vlans", "VLAN"),
+        ("ips", "IP"),
+        ("racks", "шкафы"),
+        ("routes", "трассы"),
+    ):
+        if local_c[key] != remote_c[key]:
+            lines.append(f"{label}: local {local_c[key]} / remote {remote_c[key]}")
+
+    local_dev = {d.id: d for d in local.devices}
+    remote_dev = {d.id: d for d in remote.devices}
+    only_local = sorted(
+        (d for did, d in local_dev.items() if did not in remote_dev),
+        key=lambda d: (d.hostname or "").casefold(),
+    )
+    only_remote = sorted(
+        (d for did, d in remote_dev.items() if did not in local_dev),
+        key=lambda d: (d.hostname or "").casefold(),
+    )
+    renamed: list[str] = []
+    for did, loc in local_dev.items():
+        rem = remote_dev.get(did)
+        if rem is None:
+            continue
+        if (loc.hostname or "") != (rem.hostname or ""):
+            renamed.append(f"«{loc.hostname or '—'}» ↔ «{rem.hostname or '—'}»")
+
+    if only_local or only_remote or renamed:
+        lines.append("")
+        lines.append("Устройства:")
+        for d in only_local[:12]:
+            lines.append(f"  − только локально: {d.hostname or '—'}")
+        if len(only_local) > 12:
+            lines.append(f"  − … ещё {len(only_local) - 12}")
+        for d in only_remote[:12]:
+            lines.append(f"  + только на сервере: {d.hostname or '—'}")
+        if len(only_remote) > 12:
+            lines.append(f"  + … ещё {len(only_remote) - 12}")
+        for item in renamed[:12]:
+            lines.append(f"  ~ hostname: {item}")
+        if len(renamed) > 12:
+            lines.append(f"  ~ … ещё {len(renamed) - 12}")
+
+    if len(lines) <= 2:
+        lines.append("")
+        lines.append("Содержимое похоже; отличаются в основном revision/мета.")
+    return ConflictDiff(lines=tuple(lines))
+
+
+def conflict_diff_for_blob(
+    local: ProjectSnapshot,
+    remote_data: bytes,
+) -> ConflictDiff:
+    remote = open_lanproj_bytes(remote_data)
+    return compare_snapshots(local, remote)
