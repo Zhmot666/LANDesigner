@@ -188,6 +188,85 @@ def test_devices_report_includes_units():
     assert row[report.headers.index("Юниты")] == "U5–6"
 
 
+def test_rack_free_units_and_side_summary():
+    snap = _base()
+    _, _, room, _, rack = _hierarchy(snap)
+    sw_type = inv.add_device_type(
+        snap, vendor="X", model="Y", role=DeviceRole.SWITCH, port_count=1
+    )
+    pp_type = inv.add_device_type(
+        snap,
+        vendor="Generic",
+        model="PP-24",
+        role=DeviceRole.PATCH_PANEL,
+        port_groups=list(inv.build_patch_panel_port_groups(2)),
+    )
+    inv.add_device(
+        snap,
+        sw_type.id,
+        "sw1",
+        room_id=room.id,
+        rack_id=rack.id,
+        rack_u=10,
+        rack_u_height=2,
+    )
+    pp = inv.add_device(
+        snap,
+        pp_type.id,
+        "pp1",
+        room_id=room.id,
+        rack_id=rack.id,
+        rack_u=20,
+        rack_u_height=1,
+    )
+    occupied = inv.rack_occupied_units(snap, rack.id)
+    assert occupied == {10, 11, 20}
+    free = inv.rack_free_units(snap, rack.id)
+    assert 10 not in free and 11 not in free and 20 not in free
+    assert 1 in free and 42 in free
+    total, busy = inv.rack_side_port_summary(snap, pp.id, PortSide.FRONT)
+    assert total == 2
+    assert busy == 0
+    front = next(p for p in inv.ports_for_device(snap, pp.id) if p.name == "Front-1")
+    sw_port = inv.ports_for_device(snap, next(d for d in snap.devices if d.hostname == "sw1").id)[0]
+    inv.add_cable(snap, front.id, sw_port.id, label="p", kind=CableKind.COPPER)
+    total, busy = inv.rack_side_port_summary(snap, pp.id, PortSide.FRONT)
+    assert busy == 1
+
+    report = reports_svc.build_report(snap, ReportKind.RACKS)
+    assert report.title == "Шкафы / юниты"
+    row = report.rows[0]
+    assert row[0] == "Шкаф 1"
+    assert row[report.headers.index("Занято U")] == "3"
+    assert row[report.headers.index("Свободно U")] == "39"
+    assert "sw1 (U10–11)" in row[report.headers.index("Монтаж")]
+
+
+def test_unmount_clears_rack_placement():
+    snap = _base()
+    _, _, room, _, rack = _hierarchy(snap)
+    dtype = inv.add_device_type(
+        snap, vendor="X", model="Y", role=DeviceRole.SWITCH, port_count=1
+    )
+    device = inv.add_device(
+        snap,
+        dtype.id,
+        "sw1",
+        room_id=room.id,
+        rack_id=rack.id,
+        rack_u=5,
+        rack_u_height=2,
+    )
+    inv.set_device_rack_placement(
+        snap, device.id, rack_id=None, rack_u=None, room_id=room.id
+    )
+    assert device.rack_id is None
+    assert device.rack_u is None
+    assert device.room_id == room.id
+    assert inv.rack_free_units(snap, rack.id) == list(range(1, 43))
+
+
+
 def test_sqlite_and_csv_round_trip_rack_and_pp(tmp_path: Path):
     snap = _base()
     _, _, room, _, rack = _hierarchy(snap)

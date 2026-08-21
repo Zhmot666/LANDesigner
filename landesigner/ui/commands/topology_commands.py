@@ -39,6 +39,40 @@ class MoveNodeCommand(QUndoCommand):
             self._on_changed()
 
 
+class LayoutTopologyCommand(QUndoCommand):
+    """Автораскладка: словарь node_id → (old_x, old_y, new_x, new_y)."""
+
+    def __init__(
+        self,
+        snapshot: ProjectSnapshot,
+        changes: dict[UUID, tuple[float, float, float, float]],
+        on_changed=None,
+    ) -> None:
+        super().__init__("Автораскладка схемы")
+        self._snapshot = snapshot
+        self._changes = dict(changes)
+        self._on_changed = on_changed
+
+    def isObsolete(self) -> bool:  # noqa: N802
+        return not self._changes
+
+    def redo(self) -> None:
+        topo.apply_layout_positions(
+            self._snapshot,
+            {nid: (nx, ny) for nid, (_ox, _oy, nx, ny) in self._changes.items()},
+        )
+        if self._on_changed:
+            self._on_changed()
+
+    def undo(self) -> None:
+        topo.apply_layout_positions(
+            self._snapshot,
+            {nid: (ox, oy) for nid, (ox, oy, _nx, _ny) in self._changes.items()},
+        )
+        if self._on_changed:
+            self._on_changed()
+
+
 class AddCableCommand(QUndoCommand):
     def __init__(
         self,
@@ -50,6 +84,8 @@ class AddCableCommand(QUndoCommand):
         kind: CableKind = CableKind.COPPER,
         category: CableCategory = CableCategory.OTHER,
         length_m: float | None = None,
+        color: str = "",
+        purpose: str = "",
         on_changed=None,
     ) -> None:
         super().__init__("Создание связи")
@@ -60,6 +96,8 @@ class AddCableCommand(QUndoCommand):
         self._kind = kind
         self._category = category
         self._length_m = length_m
+        self._color = color
+        self._purpose = purpose
         self._cable: Cable | None = None
         self._link: TopologyLink | None = None
         self._on_changed = on_changed
@@ -74,6 +112,8 @@ class AddCableCommand(QUndoCommand):
                 kind=self._kind,
                 category=self._category,
                 length_m=self._length_m,
+                color=self._color,
+                purpose=self._purpose,
             )
             topo.ensure_topology(self._snapshot)
             self._link = topo.link_for_cable(self._snapshot, self._cable.id)

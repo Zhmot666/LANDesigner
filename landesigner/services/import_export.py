@@ -18,6 +18,7 @@ from landesigner.domain.entities import (
     IpAddress,
     Lag,
     Port,
+    PortGroup,
     ProjectMeta,
     ProjectSnapshot,
     Rack,
@@ -25,6 +26,7 @@ from landesigner.domain.entities import (
     Site,
     TopologyLink,
     TopologyNode,
+    VirtualSwitch,
     Vlan,
     utcnow,
 )
@@ -56,6 +58,9 @@ SECTION_ORDER = (
     "cables",
     "lags",
     "lag_members",
+    "virtual_switches",
+    "vswitch_uplinks",
+    "port_groups",
     "ips",
     "topology_nodes",
     "topology_links",
@@ -128,6 +133,11 @@ def import_from_text(text: str) -> ProjectSnapshot:
     ports = [_load_port(r) for r in sections.get("ports", [])]
     cables = [_load_cable(r) for r in sections.get("cables", [])]
     lags = _load_lags(sections.get("lags", []), sections.get("lag_members", []))
+    virtual_switches = _load_virtual_switches(
+        sections.get("virtual_switches", []),
+        sections.get("vswitch_uplinks", []),
+    )
+    port_groups = [_load_port_group(r) for r in sections.get("port_groups", [])]
     ips = [_load_ip(r) for r in sections.get("ips", [])]
     topology_nodes = [_load_topology_node(r) for r in sections.get("topology_nodes", [])]
     topology_links = [_load_topology_link(r) for r in sections.get("topology_links", [])]
@@ -148,6 +158,8 @@ def import_from_text(text: str) -> ProjectSnapshot:
         cables=cables,
         vlans=vlans,
         lags=lags,
+        virtual_switches=virtual_switches,
+        port_groups=port_groups,
         ips=ips,
         topology_nodes=topology_nodes,
         topology_links=topology_links,
@@ -257,6 +269,7 @@ def _headers_for(section: str) -> list[str]:
             "side",
             "position",
             "host_port_id",
+            "port_group_id",
         ],
         "cables": [
             "id",
@@ -267,9 +280,20 @@ def _headers_for(section: str) -> list[str]:
             "length_m",
             "end_a_port_id",
             "end_b_port_id",
+            "color",
+            "purpose",
         ],
         "lags": ["id", "site_id", "device_id", "name", "mode", "notes", "mac"],
         "lag_members": ["lag_id", "port_id"],
+        "virtual_switches": [
+            "id",
+            "site_id",
+            "host_device_id",
+            "name",
+            "notes",
+        ],
+        "vswitch_uplinks": ["vswitch_id", "port_id"],
+        "port_groups": ["id", "vswitch_id", "name", "vlan_id", "notes"],
         "ips": ["id", "site_id", "port_id", "lag_id", "address", "cidr", "gateway"],
         "topology_nodes": ["id", "site_id", "device_id", "x", "y"],
         "topology_links": [
@@ -404,6 +428,7 @@ def _section_rows(snapshot: ProjectSnapshot, name: str) -> list[dict[str, str]]:
                 "side": p.side.value,
                 "position": str(p.position or 0),
                 "host_port_id": _opt_uuid(p.host_port_id),
+                "port_group_id": _opt_uuid(p.port_group_id),
             }
             for p in snapshot.ports
         ]
@@ -418,6 +443,8 @@ def _section_rows(snapshot: ProjectSnapshot, name: str) -> list[dict[str, str]]:
                 "length_m": "" if c.length_m is None else _fmt_float(c.length_m),
                 "end_a_port_id": str(c.end_a_port_id),
                 "end_b_port_id": str(c.end_b_port_id),
+                "color": c.color,
+                "purpose": c.purpose,
             }
             for c in snapshot.cables
         ]
@@ -439,6 +466,34 @@ def _section_rows(snapshot: ProjectSnapshot, name: str) -> list[dict[str, str]]:
             {"lag_id": str(lag.id), "port_id": str(port_id)}
             for lag in snapshot.lags
             for port_id in lag.member_port_ids
+        ]
+    if name == "virtual_switches":
+        return [
+            {
+                "id": str(vs.id),
+                "site_id": str(vs.site_id),
+                "host_device_id": str(vs.host_device_id),
+                "name": vs.name,
+                "notes": vs.notes,
+            }
+            for vs in snapshot.virtual_switches
+        ]
+    if name == "vswitch_uplinks":
+        return [
+            {"vswitch_id": str(vs.id), "port_id": str(port_id)}
+            for vs in snapshot.virtual_switches
+            for port_id in vs.uplink_port_ids
+        ]
+    if name == "port_groups":
+        return [
+            {
+                "id": str(pg.id),
+                "vswitch_id": str(pg.vswitch_id),
+                "name": pg.name,
+                "vlan_id": _opt_uuid(pg.vlan_id),
+                "notes": pg.notes,
+            }
+            for pg in snapshot.port_groups
         ]
     if name == "ips":
         return [
@@ -621,6 +676,7 @@ def _load_port(row: dict[str, str]) -> Port:
         side=_enum(PortSide, _get(row, "side"), PortSide.NONE),
         position=_int(row, "position", 0),
         host_port_id=_opt_parse_uuid(_get(row, "host_port_id")),
+        port_group_id=_opt_parse_uuid(_get(row, "port_group_id")),
     )
 
 
@@ -636,6 +692,8 @@ def _load_cable(row: dict[str, str]) -> Cable:
         length_m=length,
         end_a_port_id=_req_uuid(row, "end_a_port_id"),
         end_b_port_id=_req_uuid(row, "end_b_port_id"),
+        color=_get(row, "color"),
+        purpose=_get(row, "purpose"),
     )
 
 
@@ -676,6 +734,41 @@ def _load_lags(
             )
         )
     return result
+
+
+def _load_virtual_switches(
+    vs_rows: list[dict[str, str]],
+    uplink_rows: list[dict[str, str]],
+) -> list[VirtualSwitch]:
+    uplinks: dict[UUID, list[UUID]] = {}
+    for row in uplink_rows:
+        vs_id = _req_uuid(row, "vswitch_id")
+        port_id = _req_uuid(row, "port_id")
+        uplinks.setdefault(vs_id, []).append(port_id)
+    result: list[VirtualSwitch] = []
+    for row in vs_rows:
+        vs_id = _req_uuid(row, "id")
+        result.append(
+            VirtualSwitch(
+                id=vs_id,
+                site_id=_req_uuid(row, "site_id"),
+                host_device_id=_req_uuid(row, "host_device_id"),
+                name=_get(row, "name") or "vSwitch0",
+                notes=_get(row, "notes"),
+                uplink_port_ids=uplinks.get(vs_id, []),
+            )
+        )
+    return result
+
+
+def _load_port_group(row: dict[str, str]) -> PortGroup:
+    return PortGroup(
+        id=_req_uuid(row, "id"),
+        vswitch_id=_req_uuid(row, "vswitch_id"),
+        name=_get(row, "name") or "VM Network",
+        vlan_id=_opt_parse_uuid(_get(row, "vlan_id")),
+        notes=_get(row, "notes"),
+    )
 
 
 def _load_topology_node(row: dict[str, str]) -> TopologyNode:

@@ -16,6 +16,7 @@ from landesigner.domain.entities import (
     IpAddress,
     Lag,
     Port,
+    PortGroup,
     ProjectMeta,
     ProjectSnapshot,
     Rack,
@@ -23,6 +24,7 @@ from landesigner.domain.entities import (
     Site,
     TopologyLink,
     TopologyNode,
+    VirtualSwitch,
     Vlan,
 )
 from landesigner.domain.enums import (
@@ -280,6 +282,46 @@ class LocalSqliteRepository(ProjectRepository):
 
         con.execute(
             """
+            CREATE TABLE IF NOT EXISTS virtual_switch (
+                id TEXT PRIMARY KEY NOT NULL,
+                site_id TEXT NOT NULL,
+                host_device_id TEXT NOT NULL,
+                name TEXT NOT NULL DEFAULT 'vSwitch0',
+                notes TEXT NOT NULL DEFAULT '',
+                FOREIGN KEY(site_id) REFERENCES site(id) ON DELETE CASCADE,
+                FOREIGN KEY(host_device_id) REFERENCES device(id) ON DELETE CASCADE
+            )
+            """
+        )
+
+        con.execute(
+            """
+            CREATE TABLE IF NOT EXISTS vswitch_uplink (
+                vswitch_id TEXT NOT NULL,
+                port_id TEXT NOT NULL,
+                PRIMARY KEY (vswitch_id, port_id),
+                FOREIGN KEY(vswitch_id) REFERENCES virtual_switch(id) ON DELETE CASCADE,
+                FOREIGN KEY(port_id) REFERENCES port(id) ON DELETE CASCADE
+            )
+            """
+        )
+
+        con.execute(
+            """
+            CREATE TABLE IF NOT EXISTS port_group (
+                id TEXT PRIMARY KEY NOT NULL,
+                vswitch_id TEXT NOT NULL,
+                name TEXT NOT NULL DEFAULT 'VM Network',
+                vlan_id TEXT,
+                notes TEXT NOT NULL DEFAULT '',
+                FOREIGN KEY(vswitch_id) REFERENCES virtual_switch(id) ON DELETE CASCADE,
+                FOREIGN KEY(vlan_id) REFERENCES vlan(id) ON DELETE SET NULL
+            )
+            """
+        )
+
+        con.execute(
+            """
             CREATE TABLE IF NOT EXISTS port_tagged_vlan (
                 port_id TEXT NOT NULL,
                 vlan_id TEXT NOT NULL,
@@ -350,6 +392,9 @@ class LocalSqliteRepository(ProjectRepository):
         self._ensure_column(con, "device", "rack_u_height", "INTEGER NOT NULL DEFAULT 1")
         self._ensure_column(con, "device", "host_device_id", "TEXT")
         self._ensure_column(con, "port", "host_port_id", "TEXT")
+        self._ensure_column(con, "port", "port_group_id", "TEXT")
+        self._ensure_column(con, "cable", "color", "TEXT NOT NULL DEFAULT ''")
+        self._ensure_column(con, "cable", "purpose", "TEXT NOT NULL DEFAULT ''")
         con.commit()
 
     def _ensure_column(
@@ -379,6 +424,9 @@ class LocalSqliteRepository(ProjectRepository):
             con.execute("DELETE FROM ip_address")
             con.execute("DELETE FROM lag_member")
             con.execute("DELETE FROM lag")
+            con.execute("DELETE FROM vswitch_uplink")
+            con.execute("DELETE FROM port_group")
+            con.execute("DELETE FROM virtual_switch")
             con.execute("DELETE FROM port_tagged_vlan")
             con.execute("DELETE FROM cable")
             con.execute("DELETE FROM port")
@@ -618,7 +666,7 @@ class LocalSqliteRepository(ProjectRepository):
                 ports_rows = con.execute(
                     f"""
                     SELECT id, device_id, name, speed, media, status, access_vlan_id, mode,
-                           mac, side, position, host_port_id
+                           mac, side, position, host_port_id, port_group_id
                     FROM port
                     WHERE device_id IN ({placeholders_devices})
                     """,
@@ -644,6 +692,9 @@ class LocalSqliteRepository(ProjectRepository):
                         host_port_id=(
                             UUID(r[11]) if len(r) > 11 and r[11] is not None else None
                         ),
+                        port_group_id=(
+                            UUID(r[12]) if len(r) > 12 and r[12] is not None else None
+                        ),
                     )
                     for r in ports_rows
                 ]
@@ -667,7 +718,8 @@ class LocalSqliteRepository(ProjectRepository):
 
             cable_rows = con.execute(
                 f"""
-                SELECT id, site_id, label, kind, category, length_m, end_a_port_id, end_b_port_id
+                SELECT id, site_id, label, kind, category, length_m, end_a_port_id, end_b_port_id,
+                       color, purpose
                 FROM cable
                 WHERE site_id IN ({placeholders_sites})
                 """,
@@ -683,6 +735,8 @@ class LocalSqliteRepository(ProjectRepository):
                     length_m=float(r[5]) if r[5] is not None else None,
                     end_a_port_id=UUID(r[6]),
                     end_b_port_id=UUID(r[7]),
+                    color=(r[8] or "") if len(r) > 8 else "",
+                    purpose=(r[9] or "") if len(r) > 9 else "",
                 )
                 for r in cable_rows
             ]
@@ -771,6 +825,67 @@ class LocalSqliteRepository(ProjectRepository):
             except sqlite3.OperationalError:
                 lags = []
 
+            virtual_switches: list[VirtualSwitch] = []
+            port_groups: list[PortGroup] = []
+            try:
+                vs_rows = con.execute(
+                    f"""
+                    SELECT id, site_id, host_device_id, name, notes
+                    FROM virtual_switch
+                    WHERE site_id IN ({placeholders_sites})
+                    """,
+                    site_ids,
+                ).fetchall()
+                uplink_map: dict[str, list[UUID]] = {}
+                if vs_rows:
+                    vs_ids = [r[0] for r in vs_rows]
+                    placeholders_vs = _in_placeholders(vs_ids)
+                    uplink_rows = con.execute(
+                        f"""
+                        SELECT vswitch_id, port_id
+                        FROM vswitch_uplink
+                        WHERE vswitch_id IN ({placeholders_vs})
+                        """,
+                        vs_ids,
+                    ).fetchall()
+                    for vs_id, port_id in uplink_rows:
+                        uplink_map.setdefault(str(vs_id), []).append(UUID(str(port_id)))
+                virtual_switches = [
+                    VirtualSwitch(
+                        id=UUID(r[0]),
+                        site_id=UUID(r[1]),
+                        host_device_id=UUID(r[2]),
+                        name=r[3] or "vSwitch0",
+                        notes=r[4] or "",
+                        uplink_port_ids=uplink_map.get(str(r[0]), []),
+                    )
+                    for r in vs_rows
+                ]
+                if vs_rows:
+                    vs_ids = [r[0] for r in vs_rows]
+                    placeholders_vs = _in_placeholders(vs_ids)
+                    pg_rows = con.execute(
+                        f"""
+                        SELECT id, vswitch_id, name, vlan_id, notes
+                        FROM port_group
+                        WHERE vswitch_id IN ({placeholders_vs})
+                        """,
+                        vs_ids,
+                    ).fetchall()
+                    port_groups = [
+                        PortGroup(
+                            id=UUID(r[0]),
+                            vswitch_id=UUID(r[1]),
+                            name=r[2] or "VM Network",
+                            vlan_id=UUID(r[3]) if r[3] is not None else None,
+                            notes=r[4] or "",
+                        )
+                        for r in pg_rows
+                    ]
+            except sqlite3.OperationalError:
+                virtual_switches = []
+                port_groups = []
+
             topology_nodes: list[TopologyNode] = []
             topology_links: list[TopologyLink] = []
             try:
@@ -855,6 +970,8 @@ class LocalSqliteRepository(ProjectRepository):
                 cables=cables,
                 vlans=vlans,
                 lags=lags,
+                virtual_switches=virtual_switches,
+                port_groups=port_groups,
                 ips=ips,
                 topology_nodes=topology_nodes,
                 topology_links=topology_links,
@@ -880,6 +997,9 @@ class LocalSqliteRepository(ProjectRepository):
             con.execute("DELETE FROM ip_address")
             con.execute("DELETE FROM lag_member")
             con.execute("DELETE FROM lag")
+            con.execute("DELETE FROM vswitch_uplink")
+            con.execute("DELETE FROM port_group")
+            con.execute("DELETE FROM virtual_switch")
             con.execute("DELETE FROM port_tagged_vlan")
             con.execute("DELETE FROM cable")
             con.execute("DELETE FROM port")
@@ -1044,9 +1164,9 @@ class LocalSqliteRepository(ProjectRepository):
                     """
                     INSERT INTO port(
                         id, device_id, name, speed, media, status, access_vlan_id, mode,
-                        mac, side, position, host_port_id
+                        mac, side, position, host_port_id, port_group_id
                     )
-                    VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         _uuid_str(p.id),
@@ -1061,6 +1181,11 @@ class LocalSqliteRepository(ProjectRepository):
                         _enum_value(p.side),
                         int(p.position or 0),
                         _uuid_str(p.host_port_id) if p.host_port_id is not None else None,
+                        (
+                            _uuid_str(p.port_group_id)
+                            if p.port_group_id is not None
+                            else None
+                        ),
                     ),
                 )
                 for vlan_uuid in p.tagged_vlan_ids:
@@ -1076,9 +1201,10 @@ class LocalSqliteRepository(ProjectRepository):
                 con.execute(
                     """
                     INSERT INTO cable(
-                        id, site_id, label, kind, category, length_m, end_a_port_id, end_b_port_id
+                        id, site_id, label, kind, category, length_m, end_a_port_id, end_b_port_id,
+                        color, purpose
                     )
-                    VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         _uuid_str(c.id),
@@ -1089,6 +1215,8 @@ class LocalSqliteRepository(ProjectRepository):
                         c.length_m if c.length_m is not None else None,
                         _uuid_str(c.end_a_port_id),
                         _uuid_str(c.end_b_port_id),
+                        c.color or "",
+                        c.purpose or "",
                     ),
                 )
 
@@ -1116,6 +1244,44 @@ class LocalSqliteRepository(ProjectRepository):
                         """,
                         (_uuid_str(lag.id), _uuid_str(port_id)),
                     )
+
+            for vs in snapshot.virtual_switches:
+                con.execute(
+                    """
+                    INSERT INTO virtual_switch(id, site_id, host_device_id, name, notes)
+                    VALUES(?, ?, ?, ?, ?)
+                    """,
+                    (
+                        _uuid_str(vs.id),
+                        _uuid_str(vs.site_id),
+                        _uuid_str(vs.host_device_id),
+                        vs.name,
+                        vs.notes,
+                    ),
+                )
+                for port_id in vs.uplink_port_ids:
+                    con.execute(
+                        """
+                        INSERT INTO vswitch_uplink(vswitch_id, port_id)
+                        VALUES(?, ?)
+                        """,
+                        (_uuid_str(vs.id), _uuid_str(port_id)),
+                    )
+
+            for pg in snapshot.port_groups:
+                con.execute(
+                    """
+                    INSERT INTO port_group(id, vswitch_id, name, vlan_id, notes)
+                    VALUES(?, ?, ?, ?, ?)
+                    """,
+                    (
+                        _uuid_str(pg.id),
+                        _uuid_str(pg.vswitch_id),
+                        pg.name,
+                        _uuid_str(pg.vlan_id) if pg.vlan_id is not None else None,
+                        pg.notes,
+                    ),
+                )
 
             for ip in snapshot.ips:
                 con.execute(

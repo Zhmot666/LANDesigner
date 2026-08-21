@@ -32,8 +32,11 @@ ISSUE_CODE_LABELS: dict[str, str] = {
     "vm_invalid_host": "ВМ: некорректный хост",
     "host_on_non_vm": "Хост у не-ВМ",
     "vm_in_rack": "ВМ в шкафу",
-    "vnic_missing_host_nic": "vNIC без NIC хоста",
+    "vnic_missing_host_nic": "vNIC без привязки",
     "vnic_invalid_host_nic": "vNIC: некорректный NIC хоста",
+    "vnic_invalid_port_group": "vNIC: некорректный Port Group",
+    "vswitch_no_uplink": "vSwitch без uplink",
+    "port_group_orphan": "Port Group без vSwitch",
 }
 
 
@@ -66,6 +69,7 @@ def validate_project(snapshot: ProjectSnapshot) -> list[ValidationIssue]:
     issues.extend(_check_lag_links(snapshot))
     issues.extend(_check_patch_panel_pairs(snapshot))
     issues.extend(_check_virtual_machines(snapshot))
+    issues.extend(_check_vswitches(snapshot))
     return issues
 
 
@@ -300,6 +304,7 @@ def _check_virtual_machines(snapshot: ProjectSnapshot) -> list[ValidationIssue]:
     for device in snapshot.devices:
         name = device.hostname or str(device.id)
         if device.role == DeviceRole.VIRTUAL_MACHINE:
+            host = None
             if device.host_device_id is None:
                 issues.append(
                     ValidationIssue(
@@ -355,12 +360,43 @@ def _check_virtual_machines(snapshot: ProjectSnapshot) -> list[ValidationIssue]:
             for port in inv.ports_for_device(snapshot, device.id):
                 if port.media != PortMedia.VIRTUAL:
                     continue
+                if port.port_group_id is not None:
+                    pg = next(
+                        (item for item in snapshot.port_groups if item.id == port.port_group_id),
+                        None,
+                    )
+                    if pg is None:
+                        issues.append(
+                            ValidationIssue(
+                                IssueSeverity.ERROR,
+                                "vnic_invalid_port_group",
+                                f"ВМ «{name}»: vNIC «{port.name}» — Port Group не найден",
+                                entity_kind="port",
+                                entity_id=port.id,
+                            )
+                        )
+                        continue
+                    vs = next(
+                        (item for item in snapshot.virtual_switches if item.id == pg.vswitch_id),
+                        None,
+                    )
+                    if vs is None or host is None or vs.host_device_id != host.id:
+                        issues.append(
+                            ValidationIssue(
+                                IssueSeverity.ERROR,
+                                "vnic_invalid_port_group",
+                                f"ВМ «{name}»: vNIC «{port.name}» — Port Group не на хосте ВМ",
+                                entity_kind="port",
+                                entity_id=port.id,
+                            )
+                        )
+                    continue
                 if port.host_port_id is None:
                     issues.append(
                         ValidationIssue(
                             IssueSeverity.WARNING,
                             "vnic_missing_host_nic",
-                            f"ВМ «{name}»: vNIC «{port.name}» без NIC хоста",
+                            f"ВМ «{name}»: vNIC «{port.name}» без Port Group / NIC хоста",
                             entity_kind="port",
                             entity_id=port.id,
                         )
@@ -408,6 +444,46 @@ def _check_virtual_machines(snapshot: ProjectSnapshot) -> list[ValidationIssue]:
                     f"Устройство «{name}» не ВМ, но указан гипервизор",
                     entity_kind="device",
                     entity_id=device.id,
+                )
+            )
+    return issues
+
+
+def _check_vswitches(snapshot: ProjectSnapshot) -> list[ValidationIssue]:
+    issues: list[ValidationIssue] = []
+    vs_ids = {vs.id for vs in snapshot.virtual_switches}
+    for vs in snapshot.virtual_switches:
+        host = next((d for d in snapshot.devices if d.id == vs.host_device_id), None)
+        host_name = host.hostname if host is not None else "?"
+        if not vs.uplink_port_ids:
+            issues.append(
+                ValidationIssue(
+                    IssueSeverity.WARNING,
+                    "vswitch_no_uplink",
+                    f"vSwitch «{vs.name}» на {host_name} без uplink NIC",
+                    entity_kind="virtual_switch",
+                    entity_id=vs.id,
+                )
+            )
+        if host is None or host.role != DeviceRole.HYPERVISOR:
+            issues.append(
+                ValidationIssue(
+                    IssueSeverity.ERROR,
+                    "vswitch_no_uplink",
+                    f"vSwitch «{vs.name}»: хост не гипервизор",
+                    entity_kind="virtual_switch",
+                    entity_id=vs.id,
+                )
+            )
+    for pg in snapshot.port_groups:
+        if pg.vswitch_id not in vs_ids:
+            issues.append(
+                ValidationIssue(
+                    IssueSeverity.ERROR,
+                    "port_group_orphan",
+                    f"Port Group «{pg.name}» без vSwitch",
+                    entity_kind="port_group",
+                    entity_id=pg.id,
                 )
             )
     return issues

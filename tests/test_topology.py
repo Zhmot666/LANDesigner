@@ -45,8 +45,8 @@ def test_move_node_updates_coordinates():
     topo.ensure_topology(snap)
     node = snap.topology_nodes[0]
     topo.move_node(snap, node.id, 321.5, 44.0)
-    assert node.x == 321.5
-    assert node.y == 44.0
+    assert node.x == 320.0
+    assert node.y == 40.0
 
 
 def test_delete_device_removes_topology_node():
@@ -102,6 +102,44 @@ def test_link_caption_includes_ports_and_label():
     assert "↔" in caption
     port_a = next(p for p in snap.ports if p.id == cable.end_a_port_id)
     assert port_a.name in caption
+
+
+def test_link_caption_includes_vlan_and_speed():
+    from landesigner.domain.enums import PortMode
+
+    snap = _snap_with_devices()
+    cable = snap.cables[0]
+    port_a = next(p for p in snap.ports if p.id == cable.end_a_port_id)
+    port_b = next(p for p in snap.ports if p.id == cable.end_b_port_id)
+    vlan = inv.add_vlan(snap, 20, "Users")
+    inv.set_port_network(
+        snap, port_a.id, mode=PortMode.ACCESS, access_vlan_id=vlan.id, tagged_vlan_ids=[]
+    )
+    inv.set_port_network(
+        snap, port_b.id, mode=PortMode.ACCESS, access_vlan_id=vlan.id, tagged_vlan_ids=[]
+    )
+    caption = topo.link_caption(snap, cable.id)
+    assert "V20" in caption
+    assert "1G" in caption or "1000" in caption
+
+
+def test_snap_and_auto_layout():
+    snap = _snap_with_devices()
+    topo.ensure_topology(snap)
+    assert topo.snap_coord(23) == 20.0
+    assert topo.snap_point(23, 37) == (20.0, 40.0)
+
+    for i, node in enumerate(snap.topology_nodes):
+        node.x = 10 + i * 3
+        node.y = 10 + i * 5
+    changes = topo.auto_layout(snap)
+    assert changes
+    for node in snap.topology_nodes:
+        assert node.x % 20 == 0
+        assert node.y % 20 == 0
+    # Идемпотентность при уже разложенном
+    again = topo.auto_layout(snap)
+    assert again == {}
 
 
 def test_add_delete_cable_commands_undo():

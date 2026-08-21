@@ -8,6 +8,7 @@ from landesigner.domain.entities import (
     TopologyLink,
     TopologyNode,
 )
+from landesigner.domain.enums import DeviceRole, PortMode
 from landesigner.services import inventory as inv
 
 # Шаг сетки авторазмещения новых узлов (логические единицы сцены).
@@ -16,6 +17,30 @@ LAYOUT_STEP_Y = 140.0
 LAYOUT_COLS = 4
 LAYOUT_ORIGIN_X = 80.0
 LAYOUT_ORIGIN_Y = 80.0
+# Сетка редактора (совпадает с UI TopologyView.GRID).
+SNAP_GRID = 20.0
+
+_ROLE_LAYOUT_ORDER = {
+    DeviceRole.ROUTER: 0,
+    DeviceRole.SWITCH: 1,
+    DeviceRole.HYPERVISOR: 2,
+    DeviceRole.SERVER: 3,
+    DeviceRole.PATCH_PANEL: 4,
+    DeviceRole.AP: 5,
+    DeviceRole.VIRTUAL_MACHINE: 6,
+    DeviceRole.WORKSTATION: 7,
+    DeviceRole.OTHER: 8,
+}
+
+
+def snap_coord(value: float, grid: float = SNAP_GRID) -> float:
+    if grid <= 0:
+        return float(value)
+    return round(float(value) / grid) * grid
+
+
+def snap_point(x: float, y: float, grid: float = SNAP_GRID) -> tuple[float, float]:
+    return snap_coord(x, grid), snap_coord(y, grid)
 
 
 def ensure_topology(snapshot: ProjectSnapshot) -> bool:
@@ -41,9 +66,69 @@ def move_node(snapshot: ProjectSnapshot, node_id: UUID, x: float, y: float) -> T
     node = next((n for n in snapshot.topology_nodes if n.id == node_id), None)
     if node is None:
         raise ValueError("Узел схемы не найден")
-    node.x = float(x)
-    node.y = float(y)
+    sx, sy = snap_point(x, y)
+    node.x = sx
+    node.y = sy
     return node
+
+
+def auto_layout(snapshot: ProjectSnapshot) -> dict[UUID, tuple[float, float, float, float]]:
+    """
+    Переложить узлы по слоям (роль + связность) на сетке.
+    Возвращает {node_id: (old_x, old_y, new_x, new_y)} только для изменившихся.
+    """
+    ensure_topology(snapshot)
+    if not snapshot.topology_nodes:
+        return {}
+
+    # Степень связности по кабельным линкам.
+    degree: dict[UUID, int] = {n.id: 0 for n in snapshot.topology_nodes}
+    for link in snapshot.topology_links:
+        if link.topology_node_a_id in degree:
+            degree[link.topology_node_a_id] += 1
+        if link.topology_node_b_id in degree:
+            degree[link.topology_node_b_id] += 1
+
+    devices = {d.id: d for d in snapshot.devices}
+
+    def sort_key(node: TopologyNode) -> tuple:
+        device = devices.get(node.device_id)
+        role = device.role if device is not None else DeviceRole.OTHER
+        host = (device.hostname if device is not None else "").casefold()
+        return (
+            _ROLE_LAYOUT_ORDER.get(role, 99),
+            -degree.get(node.id, 0),
+            host,
+        )
+
+    ordered = sorted(snapshot.topology_nodes, key=sort_key)
+    # Ширина ряда зависит от числа узлов.
+    cols = max(3, min(8, int(math.ceil(math.sqrt(len(ordered))))))
+    changes: dict[UUID, tuple[float, float, float, float]] = {}
+    for index, node in enumerate(ordered):
+        col = index % cols
+        row = index // cols
+        new_x, new_y = snap_point(
+            LAYOUT_ORIGIN_X + col * LAYOUT_STEP_X,
+            LAYOUT_ORIGIN_Y + row * LAYOUT_STEP_Y,
+        )
+        old_x, old_y = float(node.x), float(node.y)
+        if abs(old_x - new_x) > 0.01 or abs(old_y - new_y) > 0.01:
+            changes[node.id] = (old_x, old_y, new_x, new_y)
+            node.x = new_x
+            node.y = new_y
+    return changes
+
+
+def apply_layout_positions(
+    snapshot: ProjectSnapshot,
+    positions: dict[UUID, tuple[float, float]],
+) -> None:
+    for node in snapshot.topology_nodes:
+        if node.id not in positions:
+            continue
+        x, y = positions[node.id]
+        node.x, node.y = snap_point(x, y)
 
 
 def auto_layout_positions(count: int) -> list[tuple[float, float]]:
@@ -100,6 +185,7 @@ def _sync_nodes(snapshot: ProjectSnapshot) -> bool:
         if site_id is None:
             site_id = device.site_id
         x, y = next_free_position(snapshot)
+        x, y = snap_point(x, y)
         snapshot.topology_nodes.append(
             TopologyNode(
                 site_id=device.site_id,
@@ -175,17 +261,53 @@ def endpoint_label(snapshot: ProjectSnapshot, cable_id: UUID) -> str:
 
 
 def link_caption(snapshot: ProjectSnapshot, cable_id: UUID) -> str:
-    """Короткая подпись линии на схеме: метка + имена портов."""
+    """Короткая подпись линии на схеме: метка, порты, VLAN, скорость."""
     cable = next((c for c in snapshot.cables if c.id == cable_id), None)
     if cable is None:
         return ""
     port_a = next((p for p in snapshot.ports if p.id == cable.end_a_port_id), None)
     port_b = next((p for p in snapshot.ports if p.id == cable.end_b_port_id), None)
     ends = f"{port_a.name if port_a else '?'} ↔ {port_b.name if port_b else '?'}"
+    lines: list[str] = []
     label = cable.label.strip() if cable.label else ""
     if label:
-        return f"{label}\n{ends}"
-    return ends
+        lines.append(label)
+    lines.append(ends)
+
+    meta_parts: list[str] = []
+    if port_a is not None and port_b is not None:
+        speed = min(int(port_a.speed), int(port_b.speed))
+        if speed > 0:
+            if speed >= 1000 and speed % 1000 == 0:
+                meta_parts.append(f"{speed // 1000}G")
+            else:
+                meta_parts.append(f"{speed}M")
+    vlan_bits: list[str] = []
+    for port in (port_a, port_b):
+        if port is None:
+            continue
+        if port.mode == PortMode.TRUNK and port.tagged_vlan_ids:
+            ids = []
+            for vid in port.tagged_vlan_ids:
+                vlan = next((v for v in snapshot.vlans if v.id == vid), None)
+                if vlan is not None:
+                    ids.append(str(vlan.vlan_id))
+            if ids:
+                vlan_bits.append("T:" + ",".join(ids[:4]) + ("…" if len(ids) > 4 else ""))
+                continue
+        if port.access_vlan_id is not None:
+            vlan = next((v for v in snapshot.vlans if v.id == port.access_vlan_id), None)
+            if vlan is not None:
+                vlan_bits.append(f"V{vlan.vlan_id}")
+    # Уникальные, сохраняя порядок
+    seen: set[str] = set()
+    for bit in vlan_bits:
+        if bit not in seen:
+            seen.add(bit)
+            meta_parts.append(bit)
+    if meta_parts:
+        lines.append(" · ".join(meta_parts))
+    return "\n".join(lines)
 
 
 def distance(ax: float, ay: float, bx: float, by: float) -> float:

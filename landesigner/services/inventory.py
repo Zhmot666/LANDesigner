@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ipaddress
+from dataclasses import dataclass
 from uuid import UUID
 
 from landesigner.domain.entities import (
@@ -12,9 +13,11 @@ from landesigner.domain.entities import (
     IpAddress,
     Lag,
     Port,
+    PortGroup,
     ProjectSnapshot,
     Rack,
     Room,
+    VirtualSwitch,
     Vlan,
 )
 from landesigner.domain.enums import (
@@ -502,6 +505,11 @@ def delete_port(snapshot: ProjectSnapshot, port_id: UUID) -> None:
         raise ValueError(
             f"Порт входит в LAG «{lag.name}». Сначала уберите его из агрегата."
         )
+    for vs in snapshot.virtual_switches:
+        if port_id in vs.uplink_port_ids:
+            raise ValueError(
+                f"Порт — uplink vSwitch «{vs.name}». Сначала уберите его из vSwitch."
+            )
     cable = cable_for_port(snapshot, port_id)
     if cable is not None:
         delete_cable(snapshot, cable.id)
@@ -550,6 +558,25 @@ def vnic_host_port(snapshot: ProjectSnapshot, port_id: UUID) -> Port | None:
     return next((p for p in snapshot.ports if p.id == port.host_port_id), None)
 
 
+def vnic_port_group(snapshot: ProjectSnapshot, port_id: UUID) -> PortGroup | None:
+    port = next((p for p in snapshot.ports if p.id == port_id), None)
+    if port is None or port.port_group_id is None:
+        return None
+    return next((pg for pg in snapshot.port_groups if pg.id == port.port_group_id), None)
+
+
+def vnic_binding_label(snapshot: ProjectSnapshot, port_id: UUID) -> str:
+    """Подпись привязки vNIC: Port Group предпочтительнее прямой NIC."""
+    pg = vnic_port_group(snapshot, port_id)
+    if pg is not None:
+        vs = next((v for v in snapshot.virtual_switches if v.id == pg.vswitch_id), None)
+        vs_name = vs.name if vs is not None else "?"
+        vlan = next((v for v in snapshot.vlans if v.id == pg.vlan_id), None) if pg.vlan_id else None
+        vlan_txt = f" · VLAN {vlan.vlan_id}" if vlan is not None else ""
+        return f"{vs_name}/{pg.name}{vlan_txt}"
+    return vnic_host_port_label(snapshot, port_id)
+
+
 def vnic_host_port_label(snapshot: ProjectSnapshot, port_id: UUID) -> str:
     host_port = vnic_host_port(snapshot, port_id)
     if host_port is None:
@@ -563,10 +590,17 @@ def _clear_vnic_mappings_to_port(snapshot: ProjectSnapshot, host_port_id: UUID) 
             port.host_port_id = None
 
 
+def _clear_vnic_mappings_to_port_group(snapshot: ProjectSnapshot, port_group_id: UUID) -> None:
+    for port in snapshot.ports:
+        if port.port_group_id == port_group_id:
+            port.port_group_id = None
+
+
 def _clear_vm_vnic_mappings(snapshot: ProjectSnapshot, vm_device_id: UUID) -> None:
     for port in snapshot.ports:
         if port.device_id == vm_device_id and port.media == PortMedia.VIRTUAL:
             port.host_port_id = None
+            port.port_group_id = None
 
 
 def set_vnic_host_port(
@@ -601,7 +635,246 @@ def set_vnic_host_port(
         raise ValueError("NIC хоста не может быть виртуальным портом")
 
     port.host_port_id = host_port.id
+    port.port_group_id = None
     return port
+
+
+def set_vnic_port_group(
+    snapshot: ProjectSnapshot,
+    port_id: UUID,
+    port_group_id: UUID | None,
+) -> Port:
+    port = next((p for p in snapshot.ports if p.id == port_id), None)
+    if port is None:
+        raise ValueError("Порт не найден")
+    device = next((d for d in snapshot.devices if d.id == port.device_id), None)
+    if device is None:
+        raise ValueError("Устройство не найдено")
+    if device.role != DeviceRole.VIRTUAL_MACHINE:
+        raise ValueError("Port Group доступен только для vNIC виртуального сервера")
+    if port.media != PortMedia.VIRTUAL:
+        raise ValueError("Port Group доступен только для vNIC")
+
+    if port_group_id is None:
+        port.port_group_id = None
+        return port
+
+    pg = next((item for item in snapshot.port_groups if item.id == port_group_id), None)
+    if pg is None:
+        raise ValueError("Port Group не найден")
+    vs = next((item for item in snapshot.virtual_switches if item.id == pg.vswitch_id), None)
+    if vs is None:
+        raise ValueError("vSwitch Port Group не найден")
+    host = host_for_device(snapshot, device)
+    if host is None:
+        raise ValueError("У виртуального сервера не указан гипервизор")
+    if vs.host_device_id != host.id:
+        raise ValueError("Port Group должен быть на гипервизоре этой ВМ")
+
+    port.port_group_id = pg.id
+    port.host_port_id = None
+    return port
+
+
+def vswitches_for_host(snapshot: ProjectSnapshot, host_device_id: UUID) -> list[VirtualSwitch]:
+    items = [vs for vs in snapshot.virtual_switches if vs.host_device_id == host_device_id]
+    items.sort(key=lambda vs: vs.name.casefold())
+    return items
+
+
+def port_groups_for_vswitch(snapshot: ProjectSnapshot, vswitch_id: UUID) -> list[PortGroup]:
+    items = [pg for pg in snapshot.port_groups if pg.vswitch_id == vswitch_id]
+    items.sort(key=lambda pg: pg.name.casefold())
+    return items
+
+
+def port_groups_for_vm(snapshot: ProjectSnapshot, vm_device_id: UUID) -> list[PortGroup]:
+    device = next((d for d in snapshot.devices if d.id == vm_device_id), None)
+    if device is None or device.role != DeviceRole.VIRTUAL_MACHINE:
+        return []
+    host = host_for_device(snapshot, device)
+    if host is None:
+        return []
+    result: list[PortGroup] = []
+    for vs in vswitches_for_host(snapshot, host.id):
+        result.extend(port_groups_for_vswitch(snapshot, vs.id))
+    return result
+
+
+def vswitch_uplink_labels(snapshot: ProjectSnapshot, vs: VirtualSwitch) -> str:
+    labels: list[str] = []
+    for port_id in vs.uplink_port_ids:
+        port = next((p for p in snapshot.ports if p.id == port_id), None)
+        labels.append(port.name if port is not None else "?")
+    return ", ".join(labels) if labels else "—"
+
+
+def port_group_label(snapshot: ProjectSnapshot, pg: PortGroup) -> str:
+    vs = next((v for v in snapshot.virtual_switches if v.id == pg.vswitch_id), None)
+    host = (
+        next((d for d in snapshot.devices if d.id == vs.host_device_id), None)
+        if vs is not None
+        else None
+    )
+    vlan = next((v for v in snapshot.vlans if v.id == pg.vlan_id), None) if pg.vlan_id else None
+    parts = [
+        host.hostname if host else "?",
+        vs.name if vs else "?",
+        pg.name,
+    ]
+    base = " / ".join(parts)
+    if vlan is not None:
+        return f"{base} (VLAN {vlan.vlan_id})"
+    return base
+
+
+def _validate_vswitch_uplinks(
+    snapshot: ProjectSnapshot,
+    host_device_id: UUID,
+    uplink_port_ids: list[UUID],
+    *,
+    exclude_vswitch_id: UUID | None = None,
+) -> list[UUID]:
+    members: list[UUID] = []
+    seen: set[UUID] = set()
+    for port_id in uplink_port_ids:
+        if port_id in seen:
+            continue
+        seen.add(port_id)
+        port = next((p for p in snapshot.ports if p.id == port_id), None)
+        if port is None:
+            raise ValueError("Uplink-порт не найден")
+        if port.device_id != host_device_id:
+            raise ValueError("Uplink должен принадлежать гипервизору")
+        if port.media == PortMedia.VIRTUAL:
+            raise ValueError("Uplink не может быть виртуальным портом")
+        for other in snapshot.virtual_switches:
+            if exclude_vswitch_id is not None and other.id == exclude_vswitch_id:
+                continue
+            if port_id in other.uplink_port_ids:
+                raise ValueError(
+                    f"Порт «{port.name}» уже uplink у vSwitch «{other.name}»"
+                )
+        members.append(port_id)
+    return members
+
+
+def add_virtual_switch(
+    snapshot: ProjectSnapshot,
+    host_device_id: UUID,
+    name: str,
+    *,
+    uplink_port_ids: list[UUID] | None = None,
+    notes: str = "",
+) -> VirtualSwitch:
+    host = next((d for d in snapshot.devices if d.id == host_device_id), None)
+    if host is None:
+        raise ValueError("Гипервизор не найден")
+    if host.role != DeviceRole.HYPERVISOR:
+        raise ValueError("vSwitch можно создать только на гипервизоре")
+    cleaned = (name or "").strip() or "vSwitch0"
+    uplinks = _validate_vswitch_uplinks(
+        snapshot, host_device_id, list(uplink_port_ids or [])
+    )
+    vs = VirtualSwitch(
+        site_id=host.site_id,
+        host_device_id=host.id,
+        name=cleaned,
+        notes=(notes or "").strip(),
+        uplink_port_ids=uplinks,
+    )
+    snapshot.virtual_switches.append(vs)
+    return vs
+
+
+def update_virtual_switch(
+    snapshot: ProjectSnapshot,
+    vswitch_id: UUID,
+    *,
+    name: str | None = None,
+    uplink_port_ids: list[UUID] | None = None,
+    notes: str | None = None,
+) -> VirtualSwitch:
+    vs = next((item for item in snapshot.virtual_switches if item.id == vswitch_id), None)
+    if vs is None:
+        raise ValueError("vSwitch не найден")
+    if name is not None:
+        vs.name = name.strip() or vs.name
+    if notes is not None:
+        vs.notes = notes.strip()
+    if uplink_port_ids is not None:
+        vs.uplink_port_ids = _validate_vswitch_uplinks(
+            snapshot,
+            vs.host_device_id,
+            uplink_port_ids,
+            exclude_vswitch_id=vs.id,
+        )
+    return vs
+
+
+def delete_virtual_switch(snapshot: ProjectSnapshot, vswitch_id: UUID) -> None:
+    pg_ids = {pg.id for pg in snapshot.port_groups if pg.vswitch_id == vswitch_id}
+    for port in snapshot.ports:
+        if port.port_group_id in pg_ids:
+            port.port_group_id = None
+    snapshot.port_groups = [pg for pg in snapshot.port_groups if pg.vswitch_id != vswitch_id]
+    snapshot.virtual_switches = [
+        vs for vs in snapshot.virtual_switches if vs.id != vswitch_id
+    ]
+
+
+def add_port_group(
+    snapshot: ProjectSnapshot,
+    vswitch_id: UUID,
+    name: str,
+    *,
+    vlan_id: UUID | None = None,
+    notes: str = "",
+) -> PortGroup:
+    vs = next((item for item in snapshot.virtual_switches if item.id == vswitch_id), None)
+    if vs is None:
+        raise ValueError("vSwitch не найден")
+    if vlan_id is not None and not any(v.id == vlan_id for v in snapshot.vlans):
+        raise ValueError("VLAN не найден")
+    cleaned = (name or "").strip() or "VM Network"
+    pg = PortGroup(
+        vswitch_id=vs.id,
+        name=cleaned,
+        vlan_id=vlan_id,
+        notes=(notes or "").strip(),
+    )
+    snapshot.port_groups.append(pg)
+    return pg
+
+
+def update_port_group(
+    snapshot: ProjectSnapshot,
+    port_group_id: UUID,
+    *,
+    name: str | None = None,
+    vlan_id: UUID | None = None,
+    clear_vlan: bool = False,
+    notes: str | None = None,
+) -> PortGroup:
+    pg = next((item for item in snapshot.port_groups if item.id == port_group_id), None)
+    if pg is None:
+        raise ValueError("Port Group не найден")
+    if name is not None:
+        pg.name = name.strip() or pg.name
+    if notes is not None:
+        pg.notes = notes.strip()
+    if clear_vlan:
+        pg.vlan_id = None
+    elif vlan_id is not None:
+        if not any(v.id == vlan_id for v in snapshot.vlans):
+            raise ValueError("VLAN не найден")
+        pg.vlan_id = vlan_id
+    return pg
+
+
+def delete_port_group(snapshot: ProjectSnapshot, port_group_id: UUID) -> None:
+    _clear_vnic_mappings_to_port_group(snapshot, port_group_id)
+    snapshot.port_groups = [pg for pg in snapshot.port_groups if pg.id != port_group_id]
 
 
 def _require_hypervisor_host(
@@ -822,6 +1095,49 @@ def rack_placement_label(device: Device) -> str:
     return f"U{start}–{end}"
 
 
+def rack_occupied_units(
+    snapshot: ProjectSnapshot,
+    rack_id: UUID,
+    *,
+    exclude_device_id: UUID | None = None,
+) -> set[int]:
+    used: set[int] = set()
+    for device in devices_in_rack(snapshot, rack_id):
+        if exclude_device_id is not None and device.id == exclude_device_id:
+            continue
+        rng = rack_u_range(device)
+        if rng is None:
+            continue
+        start, end = rng
+        used.update(range(start, end + 1))
+    return used
+
+
+def rack_free_units(snapshot: ProjectSnapshot, rack_id: UUID) -> list[int]:
+    rack = next((r for r in snapshot.racks if r.id == rack_id), None)
+    if rack is None:
+        return []
+    occupied = rack_occupied_units(snapshot, rack_id)
+    return [u for u in range(1, int(rack.units) + 1) if u not in occupied]
+
+
+def rack_side_port_summary(
+    snapshot: ProjectSnapshot,
+    device_id: UUID,
+    side: PortSide,
+) -> tuple[int, int]:
+    """(всего портов стороны, занятых кабелем)."""
+    total = 0
+    busy = 0
+    for port in ports_for_device(snapshot, device_id):
+        if port.side != side:
+            continue
+        total += 1
+        if peer_port(snapshot, port.id) is not None:
+            busy += 1
+    return total, busy
+
+
 def validate_rack_placement(
     snapshot: ProjectSnapshot,
     rack_id: UUID,
@@ -932,6 +1248,105 @@ def paired_port(snapshot: ProjectSnapshot, port: Port) -> Port | None:
     return None
 
 
+@dataclass(frozen=True)
+class PatchPairInfo:
+    position: int
+    front: Port
+    rear: Port
+    front_peer_id: UUID | None
+    rear_peer_id: UUID | None
+
+    @property
+    def status(self) -> str:
+        f_busy = self.front_peer_id is not None
+        r_busy = self.rear_peer_id is not None
+        if f_busy and r_busy:
+            return "through"
+        if f_busy or r_busy:
+            return "half"
+        return "free"
+
+
+PATCH_PAIR_STATUS_RU = {
+    "free": "Свободна",
+    "half": "Одна сторона",
+    "through": "Проброс",
+}
+
+
+def patch_panel_pairs(snapshot: ProjectSnapshot, device_id: UUID) -> list[PatchPairInfo]:
+    """Сквозные пары Front↔Rear патч-панели, по возрастанию position."""
+    device = next((d for d in snapshot.devices if d.id == device_id), None)
+    if device is None or device.role != DeviceRole.PATCH_PANEL:
+        return []
+    fronts = {
+        p.position: p
+        for p in ports_for_device(snapshot, device_id)
+        if p.side == PortSide.FRONT and p.position > 0
+    }
+    rears = {
+        p.position: p
+        for p in ports_for_device(snapshot, device_id)
+        if p.side == PortSide.REAR and p.position > 0
+    }
+    rows: list[PatchPairInfo] = []
+    for pos in sorted(set(fronts) & set(rears)):
+        front = fronts[pos]
+        rear = rears[pos]
+        fp = peer_port(snapshot, front.id)
+        rp = peer_port(snapshot, rear.id)
+        rows.append(
+            PatchPairInfo(
+                position=pos,
+                front=front,
+                rear=rear,
+                front_peer_id=fp.id if fp is not None else None,
+                rear_peer_id=rp.id if rp is not None else None,
+            )
+        )
+    return rows
+
+
+def patch_through_path_label(snapshot: ProjectSnapshot, pair: PatchPairInfo) -> str:
+    """Путь A ↔ Front ↔ Rear ↔ B (или короче, если сторона свободна)."""
+    parts: list[str] = []
+    if pair.front_peer_id is not None:
+        parts.append(port_endpoint_label(snapshot, pair.front_peer_id))
+    parts.append(port_endpoint_label(snapshot, pair.front.id))
+    parts.append(port_endpoint_label(snapshot, pair.rear.id))
+    if pair.rear_peer_id is not None:
+        parts.append(port_endpoint_label(snapshot, pair.rear_peer_id))
+    return " ↔ ".join(parts)
+
+
+def cable_path_label(snapshot: ProjectSnapshot, cable: Cable) -> str:
+    """Конец A ↔ B; если конец на PP и пара с другой стороны занята — полный проброс."""
+    for end_id in (cable.end_a_port_id, cable.end_b_port_id):
+        port = next((p for p in snapshot.ports if p.id == end_id), None)
+        if port is None:
+            continue
+        pair = paired_port(snapshot, port)
+        if pair is None:
+            continue
+        far = peer_port(snapshot, pair.id)
+        if far is None:
+            continue
+        near = peer_port(snapshot, port.id)
+        # near — другая сторона текущего кабеля
+        if near is None:
+            continue
+        return (
+            f"{port_endpoint_label(snapshot, near.id)} ↔ "
+            f"{port_endpoint_label(snapshot, port.id)} ↔ "
+            f"{port_endpoint_label(snapshot, pair.id)} ↔ "
+            f"{port_endpoint_label(snapshot, far.id)}"
+        )
+    return (
+        f"{port_endpoint_label(snapshot, cable.end_a_port_id)} ↔ "
+        f"{port_endpoint_label(snapshot, cable.end_b_port_id)}"
+    )
+
+
 def delete_device(snapshot: ProjectSnapshot, device_id: UUID) -> None:
     device = next((d for d in snapshot.devices if d.id == device_id), None)
     if device is None:
@@ -948,6 +1363,9 @@ def delete_device(snapshot: ProjectSnapshot, device_id: UUID) -> None:
 
     port_ids = {p.id for p in snapshot.ports if p.device_id == device_id}
     lag_ids = {lag.id for lag in snapshot.lags if lag.device_id == device_id}
+    vs_ids = {
+        vs.id for vs in snapshot.virtual_switches if vs.host_device_id == device_id
+    }
     for cable in list(snapshot.cables):
         touches = cable.end_a_port_id in port_ids or cable.end_b_port_id in port_ids
         if not touches:
@@ -960,6 +1378,22 @@ def delete_device(snapshot: ProjectSnapshot, device_id: UUID) -> None:
         if other_id not in port_ids:
             _release_port(snapshot, other_id)
         snapshot.cables.remove(cable)
+
+    for port_id in port_ids:
+        _clear_vnic_mappings_to_port(snapshot, port_id)
+
+    pg_ids = {pg.id for pg in snapshot.port_groups if pg.vswitch_id in vs_ids}
+    for port in snapshot.ports:
+        if port.port_group_id in pg_ids:
+            port.port_group_id = None
+    snapshot.port_groups = [
+        pg for pg in snapshot.port_groups if pg.vswitch_id not in vs_ids
+    ]
+    snapshot.virtual_switches = [
+        vs for vs in snapshot.virtual_switches if vs.id not in vs_ids
+    ]
+    for vs in snapshot.virtual_switches:
+        vs.uplink_port_ids = [pid for pid in vs.uplink_port_ids if pid not in port_ids]
 
     snapshot.ips = [
         ip
@@ -1185,6 +1619,8 @@ def add_cable(
     kind: CableKind | str = CableKind.COPPER,
     category: CableCategory | str = CableCategory.OTHER,
     length_m: float | None = None,
+    color: str = "",
+    purpose: str = "",
     allow_media_mismatch: bool = False,
 ) -> Cable:
     if end_a_port_id == end_b_port_id:
@@ -1226,6 +1662,8 @@ def add_cable(
         length_m=length_m if length_m and length_m > 0 else None,
         end_a_port_id=end_a_port_id,
         end_b_port_id=end_b_port_id,
+        color=(color or "").strip(),
+        purpose=(purpose or "").strip(),
     )
     snapshot.cables.append(cable)
     return cable
@@ -1268,6 +1706,8 @@ def update_cable(
     category: CableCategory | str | None = None,
     length_m: float | None = None,
     clear_length: bool = False,
+    color: str | None = None,
+    purpose: str | None = None,
 ) -> Cable:
     cable = next((c for c in snapshot.cables if c.id == cable_id), None)
     if cable is None:
@@ -1284,6 +1724,10 @@ def update_cable(
         cable.length_m = None
     elif length_m is not None:
         cable.length_m = length_m if length_m > 0 else None
+    if color is not None:
+        cable.color = color.strip()
+    if purpose is not None:
+        cable.purpose = purpose.strip()
     return cable
 
 
@@ -1371,6 +1815,9 @@ def delete_vlan(snapshot: ProjectSnapshot, vlan_uuid: UUID) -> None:
             port.access_vlan_id = None
         if vlan_uuid in port.tagged_vlan_ids:
             port.tagged_vlan_ids = [v for v in port.tagged_vlan_ids if v != vlan_uuid]
+    for pg in snapshot.port_groups:
+        if pg.vlan_id == vlan_uuid:
+            pg.vlan_id = None
     snapshot.vlans = [v for v in snapshot.vlans if v.id != vlan_uuid]
 
 

@@ -106,12 +106,17 @@ def test_reports_devices_ports_cables_vlans():
 
     cables = reports_svc.build_report(snap, ReportKind.CABLES)
     assert cables.rows[0][0] == "Uplink"
-    assert "5" in cables.rows[0][3]
+    assert "5" in cables.rows[0][cables.headers.index("Длина, м")]
+    assert "Путь" in cables.headers
 
     vlans = reports_svc.build_report(snap, ReportKind.VLANS)
     assert vlans.rows[0][0] == "10"
     assert vlans.rows[0][1] == "Users"
     assert vlans.rows[0][2] == "Офис"
+
+    racks = reports_svc.build_report(snap, ReportKind.RACKS)
+    assert racks.title == "Шкафы / юниты"
+    assert "Шкаф" in racks.headers
 
     csv_text = reports_svc.report_to_csv(cables)
     assert "Uplink" in csv_text

@@ -115,7 +115,8 @@ class Port:
     mac: str = ""  # AA:BB:CC:DD:EE:FF, опционально
     side: PortSide = PortSide.NONE
     position: int = 0  # номер пары на патч-панели (1…N); 0 — обычный порт
-    host_port_id: Optional[UUID] = None  # vNIC → физический NIC гипервизора
+    host_port_id: Optional[UUID] = None  # vNIC → физический NIC гипервизора (прямо)
+    port_group_id: Optional[UUID] = None  # vNIC → Port Group (через vSwitch)
     # Access VLAN (ACCESS) или native/untagged (TRUNK).
     access_vlan_id: Optional[UUID] = None
     tagged_vlan_ids: list[UUID] = field(default_factory=list)
@@ -131,6 +132,8 @@ class Cable:
     length_m: Optional[float] = None
     end_a_port_id: UUID = field(default_factory=uuid4)
     end_b_port_id: UUID = field(default_factory=uuid4)
+    color: str = ""  # цвет маркировки
+    purpose: str = ""  # назначение / роль в трассе
 
 
 @dataclass
@@ -165,6 +168,29 @@ class Lag:
     member_port_ids: list[UUID] = field(default_factory=list)
     notes: str = ""
     mac: str = ""  # MAC агрегата (часто у bond), опционально
+
+
+@dataclass
+class VirtualSwitch:
+    """Виртуальный коммутатор гипервизора (vSwitch / vDS lite)."""
+
+    id: UUID = field(default_factory=uuid4)
+    site_id: UUID = field(default_factory=uuid4)
+    host_device_id: UUID = field(default_factory=uuid4)
+    name: str = "vSwitch0"
+    notes: str = ""
+    uplink_port_ids: list[UUID] = field(default_factory=list)
+
+
+@dataclass
+class PortGroup:
+    """Порт-группа на vSwitch (имя + опциональный VLAN)."""
+
+    id: UUID = field(default_factory=uuid4)
+    vswitch_id: UUID = field(default_factory=uuid4)
+    name: str = "VM Network"
+    vlan_id: Optional[UUID] = None
+    notes: str = ""
 
 
 @dataclass
@@ -209,6 +235,8 @@ class ProjectSnapshot:
     cables: list[Cable] = field(default_factory=list)
     vlans: list[Vlan] = field(default_factory=list)
     lags: list[Lag] = field(default_factory=list)
+    virtual_switches: list[VirtualSwitch] = field(default_factory=list)
+    port_groups: list[PortGroup] = field(default_factory=list)
     ips: list[IpAddress] = field(default_factory=list)
     topology_nodes: list[TopologyNode] = field(default_factory=list)
     topology_links: list[TopologyLink] = field(default_factory=list)

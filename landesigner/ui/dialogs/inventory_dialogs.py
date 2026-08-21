@@ -927,12 +927,14 @@ class CableDialog(QDialog):
         *,
         device_a_id: UUID | None = None,
         device_b_id: UUID | None = None,
+        port_a_id: UUID | None = None,
+        port_b_id: UUID | None = None,
     ) -> None:
         super().__init__(parent)
         self._snapshot = snapshot
         self._cable = cable
         self.setWindowTitle("Кабель" if cable is None else "Редактировать кабель")
-        self.resize(520, 280)
+        self.resize(520, 340)
 
         layout = QVBoxLayout(self)
         form = QFormLayout()
@@ -944,6 +946,10 @@ class CableDialog(QDialog):
         self._label = QLineEdit(self)
         self._kind = QComboBox(self)
         self._category = QComboBox(self)
+        self._color = QLineEdit(self)
+        self._color.setPlaceholderText("синий, orange, …")
+        self._purpose = QLineEdit(self)
+        self._purpose.setPlaceholderText("uplink, PC, телефон…")
         self._length = QDoubleSpinBox(self)
         self._length.setRange(0.0, 10000.0)
         self._length.setDecimals(1)
@@ -968,6 +974,8 @@ class CableDialog(QDialog):
         form.addRow("Метка", self._label)
         form.addRow("Вид", self._kind)
         form.addRow("Категория", self._category)
+        form.addRow("Цвет", self._color)
+        form.addRow("Назначение", self._purpose)
         form.addRow("Длина", self._length)
         layout.addLayout(form)
 
@@ -987,6 +995,14 @@ class CableDialog(QDialog):
             self._port_a.currentIndexChanged.connect(self._guess_kind)
             self._port_b.currentIndexChanged.connect(self._guess_kind)
             self._kind.currentIndexChanged.connect(self._sync_category_hint)
+            if port_a_id is not None:
+                port = next((p for p in snapshot.ports if p.id == port_a_id), None)
+                if port is not None:
+                    device_a_id = port.device_id
+            if port_b_id is not None:
+                port = next((p for p in snapshot.ports if p.id == port_b_id), None)
+                if port is not None:
+                    device_b_id = port.device_id
             if device_a_id is not None:
                 idx = self._device_a.findData(str(device_a_id))
                 if idx >= 0:
@@ -999,10 +1015,22 @@ class CableDialog(QDialog):
             elif self._device_b.count() > 1 and device_a_id is None:
                 self._device_b.setCurrentIndex(1)
             self._reload_ports_b()
+            if port_a_id is not None:
+                pidx = self._port_a.findData(str(port_a_id))
+                if pidx >= 0:
+                    self._port_a.setCurrentIndex(pidx)
+            if port_b_id is not None:
+                pidx = self._port_b.findData(str(port_b_id))
+                if pidx >= 0:
+                    self._port_b.setCurrentIndex(pidx)
             if device_a_id is not None and device_b_id is not None:
                 self._device_a.setEnabled(False)
                 self._device_b.setEnabled(False)
-                self._hint.setText("Устройства выбраны на схеме — укажите свободные порты.")
+                self._hint.setText("Устройства выбраны — укажите свободные порты.")
+            if port_a_id is not None:
+                self._hint.setText(
+                    "Порт A выбран с патч-панели — укажите второй конец кабеля."
+                )
             self._guess_kind()
 
         buttons = QDialogButtonBox(
@@ -1025,6 +1053,8 @@ class CableDialog(QDialog):
             self._reload_ports_b(include_occupied=True)
             self._port_b.setCurrentIndex(self._port_b.findData(str(port_b.id)))
         self._label.setText(cable.label)
+        self._color.setText(cable.color)
+        self._purpose.setText(cable.purpose)
         kidx = self._kind.findData(cable.kind.value)
         if kidx >= 0:
             self._kind.setCurrentIndex(kidx)
@@ -1033,7 +1063,8 @@ class CableDialog(QDialog):
             self._category.setCurrentIndex(cidx)
         if cable.length_m is not None:
             self._length.setValue(float(cable.length_m))
-        self._hint.setText("Концы кабеля при правке не меняются.")
+        path = inventory_service.cable_path_label(self._snapshot, cable)
+        self._hint.setText(f"Концы при правке не меняются.\nПуть: {path}")
 
     def _free_ports_for_device(self, device_id: UUID, *, include_occupied: bool) -> list:
         ports = inventory_service.ports_for_device(self._snapshot, device_id)
@@ -1118,7 +1149,9 @@ class CableDialog(QDialog):
             return None
         return next((p for p in self._snapshot.ports if p.id == UUID(str(raw))), None)
 
-    def values(self) -> tuple[UUID, UUID, str, CableKind, CableCategory, float | None]:
+    def values(
+        self,
+    ) -> tuple[UUID, UUID, str, CableKind, CableCategory, float | None, str, str]:
         a_raw = self._port_a.currentData()
         b_raw = self._port_b.currentData()
         if a_raw is None or b_raw is None:
@@ -1131,6 +1164,8 @@ class CableDialog(QDialog):
             CableKind(str(self._kind.currentData())),
             CableCategory(str(self._category.currentData())),
             length if length > 0 else None,
+            self._color.text().strip(),
+            self._purpose.text().strip(),
         )
 
     def is_valid(self) -> bool:
@@ -1684,7 +1719,7 @@ class PortNetworkDialog(QDialog):
 
 
 class VnicHostDialog(QDialog):
-    """Привязка vNIC виртуального сервера к физическому NIC гипервизора."""
+    """Привязка vNIC к Port Group (предпочтительно) или напрямую к NIC хоста."""
 
     def __init__(
         self,
@@ -1699,25 +1734,40 @@ class VnicHostDialog(QDialog):
         if port is None:
             raise ValueError("Порт не найден")
         title = inventory_service.port_endpoint_label(snapshot, port_id)
-        self.setWindowTitle(f"NIC хоста — {title}")
+        self.setWindowTitle(f"Привязка vNIC — {title}")
 
         layout = QVBoxLayout(self)
         form = QFormLayout()
+        self._port_group = QComboBox(self)
+        self._port_group.addItem("— не выбран —", None)
+        device = next((d for d in snapshot.devices if d.id == port.device_id), None)
+        if device is not None:
+            for pg in inventory_service.port_groups_for_vm(snapshot, device.id):
+                self._port_group.addItem(
+                    inventory_service.port_group_label(snapshot, pg),
+                    str(pg.id),
+                )
+        if port.port_group_id is not None:
+            idx = self._port_group.findData(str(port.port_group_id))
+            if idx >= 0:
+                self._port_group.setCurrentIndex(idx)
+
         self._host_nic = QComboBox(self)
         self._host_nic.addItem("— не привязан —", None)
-        device = next((d for d in snapshot.devices if d.id == port.device_id), None)
         if device is not None:
             for nic in inventory_service.host_nics_for_vm(snapshot, device.id):
                 label = inventory_service.port_endpoint_label(snapshot, nic.id)
                 self._host_nic.addItem(label, str(nic.id))
-        if port.host_port_id is not None:
+        if port.host_port_id is not None and port.port_group_id is None:
             idx = self._host_nic.findData(str(port.host_port_id))
             if idx >= 0:
                 self._host_nic.setCurrentIndex(idx)
-        form.addRow("NIC гипервизора", self._host_nic)
+
+        form.addRow("Port Group", self._port_group)
+        form.addRow("NIC напрямую", self._host_nic)
         hint = QLabel(
-            "Логическая привязка vNIC к физическому интерфейсу хоста (без vSwitch). "
-            "Кабель к коммутатору обычно идёт с NIC гипервизора.",
+            "Предпочтительна привязка к Port Group (vSwitch → uplink). "
+            "Прямой NIC — запасной вариант; при выборе Port Group прямая привязка сбрасывается.",
             self,
         )
         hint.setWordWrap(True)
@@ -1732,8 +1782,201 @@ class VnicHostDialog(QDialog):
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
 
+        self._port_group.currentIndexChanged.connect(self._on_pg_changed)
+        self._on_pg_changed()
+
+    def _on_pg_changed(self) -> None:
+        has_pg = self._port_group.currentData() is not None
+        self._host_nic.setEnabled(not has_pg)
+
+    def port_group_id(self) -> UUID | None:
+        raw = self._port_group.currentData()
+        if raw is None:
+            return None
+        return UUID(str(raw))
+
     def host_port_id(self) -> UUID | None:
+        if self.port_group_id() is not None:
+            return None
         raw = self._host_nic.currentData()
         if raw is None:
             return None
         return UUID(str(raw))
+
+
+class VirtualSwitchDialog(QDialog):
+    """Создание / правка vSwitch на гипервизоре."""
+
+    def __init__(
+        self,
+        snapshot: ProjectSnapshot,
+        vswitch=None,
+        preferred_host_id: UUID | None = None,
+        parent=None,
+    ) -> None:
+        super().__init__(parent)
+        self._snapshot = snapshot
+        self._vswitch = vswitch
+        self.setWindowTitle("vSwitch" if vswitch is None else f"vSwitch «{vswitch.name}»")
+        self.resize(480, 400)
+
+        layout = QVBoxLayout(self)
+        form = QFormLayout()
+        self._host = QComboBox(self)
+        self._name = QLineEdit(self)
+        self._notes = QLineEdit(self)
+        for device in snapshot.devices:
+            if device.role != DeviceRole.HYPERVISOR:
+                continue
+            self._host.addItem(device.hostname or str(device.id), str(device.id))
+        form.addRow("Гипервизор", self._host)
+        form.addRow("Имя", self._name)
+        form.addRow("Заметки", self._notes)
+        layout.addLayout(form)
+
+        layout.addWidget(QLabel("Uplink NIC:", self))
+        self._ports = QListWidget(self)
+        self._ports.setSelectionMode(QListWidget.SelectionMode.MultiSelection)
+        layout.addWidget(self._ports, stretch=1)
+
+        self._host.currentIndexChanged.connect(self._reload_ports)
+        self._host.setEnabled(vswitch is None)
+        if vswitch is not None:
+            self._name.setText(vswitch.name)
+            self._notes.setText(vswitch.notes)
+            hidx = self._host.findData(str(vswitch.host_device_id))
+            if hidx >= 0:
+                self._host.setCurrentIndex(hidx)
+            selected = {str(pid) for pid in vswitch.uplink_port_ids}
+            self._reload_ports()
+            for i in range(self._ports.count()):
+                item = self._ports.item(i)
+                if item is not None and item.data(Qt.ItemDataRole.UserRole) in selected:
+                    item.setSelected(True)
+        else:
+            if preferred_host_id is not None:
+                hidx = self._host.findData(str(preferred_host_id))
+                if hidx >= 0:
+                    self._host.setCurrentIndex(hidx)
+            self._name.setText("vSwitch0")
+            self._reload_ports()
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        _russian_buttons(buttons)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def _reload_ports(self) -> None:
+        self._ports.clear()
+        raw = self._host.currentData()
+        if raw is None:
+            return
+        host_id = UUID(str(raw))
+        exclude = self._vswitch.id if self._vswitch is not None else None
+        for port in inventory_service.ports_for_device(self._snapshot, host_id):
+            if port.media == PortMedia.VIRTUAL:
+                continue
+            busy = None
+            for vs in self._snapshot.virtual_switches:
+                if exclude is not None and vs.id == exclude:
+                    continue
+                if port.id in vs.uplink_port_ids:
+                    busy = vs.name
+                    break
+            label = port.name
+            if busy:
+                label = f"{label} (занят: {busy})"
+            item = QListWidgetItem(label)
+            item.setData(Qt.ItemDataRole.UserRole, str(port.id))
+            if busy:
+                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEnabled)
+            self._ports.addItem(item)
+
+    def values(self):
+        host_raw = self._host.currentData()
+        host_id = UUID(str(host_raw)) if host_raw is not None else None
+        uplink_ids: list[UUID] = []
+        for item in self._ports.selectedItems():
+            raw = item.data(Qt.ItemDataRole.UserRole)
+            if raw:
+                uplink_ids.append(UUID(str(raw)))
+        return host_id, self._name.text().strip(), uplink_ids, self._notes.text().strip()
+
+
+class PortGroupDialog(QDialog):
+    """Создание / правка Port Group."""
+
+    def __init__(
+        self,
+        snapshot: ProjectSnapshot,
+        port_group=None,
+        preferred_vswitch_id: UUID | None = None,
+        parent=None,
+    ) -> None:
+        super().__init__(parent)
+        self._snapshot = snapshot
+        self._port_group = port_group
+        self.setWindowTitle(
+            "Port Group" if port_group is None else f"Port Group «{port_group.name}»"
+        )
+
+        layout = QVBoxLayout(self)
+        form = QFormLayout()
+        self._vswitch = QComboBox(self)
+        self._name = QLineEdit(self)
+        self._vlan = QComboBox(self)
+        self._notes = QLineEdit(self)
+        self._vlan.addItem("— без VLAN —", None)
+        for vlan in sorted(snapshot.vlans, key=lambda v: v.vlan_id):
+            label = f"{vlan.vlan_id}"
+            if vlan.name:
+                label = f"{vlan.vlan_id} — {vlan.name}"
+            self._vlan.addItem(label, str(vlan.id))
+        for vs in snapshot.virtual_switches:
+            host = next((d for d in snapshot.devices if d.id == vs.host_device_id), None)
+            host_name = host.hostname if host else "?"
+            self._vswitch.addItem(f"{host_name} / {vs.name}", str(vs.id))
+        form.addRow("vSwitch", self._vswitch)
+        form.addRow("Имя", self._name)
+        form.addRow("VLAN", self._vlan)
+        form.addRow("Заметки", self._notes)
+        layout.addLayout(form)
+
+        self._vswitch.setEnabled(port_group is None)
+        if port_group is not None:
+            self._name.setText(port_group.name)
+            self._notes.setText(port_group.notes)
+            vidx = self._vswitch.findData(str(port_group.vswitch_id))
+            if vidx >= 0:
+                self._vswitch.setCurrentIndex(vidx)
+            if port_group.vlan_id is not None:
+                vlidx = self._vlan.findData(str(port_group.vlan_id))
+                if vlidx >= 0:
+                    self._vlan.setCurrentIndex(vlidx)
+        else:
+            if preferred_vswitch_id is not None:
+                vidx = self._vswitch.findData(str(preferred_vswitch_id))
+                if vidx >= 0:
+                    self._vswitch.setCurrentIndex(vidx)
+            self._name.setText("VM Network")
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        _russian_buttons(buttons)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def values(self):
+        vs_raw = self._vswitch.currentData()
+        vlan_raw = self._vlan.currentData()
+        return (
+            UUID(str(vs_raw)) if vs_raw is not None else None,
+            self._name.text().strip(),
+            UUID(str(vlan_raw)) if vlan_raw is not None else None,
+            self._notes.text().strip(),
+        )

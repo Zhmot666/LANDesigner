@@ -78,9 +78,16 @@ class InventoryView(QWidget):
     add_lag_requested = Signal()
     edit_lag_requested = Signal(object)  # UUID
     delete_lag_requested = Signal(object)  # UUID
+    add_vswitch_requested = Signal()
+    edit_vswitch_requested = Signal(object)  # UUID
+    delete_vswitch_requested = Signal(object)  # UUID
+    add_port_group_requested = Signal()
+    edit_port_group_requested = Signal(object)  # UUID
+    delete_port_group_requested = Signal(object)  # UUID
     edit_port_network_requested = Signal(object)  # UUID
     edit_port_properties_requested = Signal(object)  # UUID
     edit_vnic_host_requested = Signal(object)  # UUID
+    patch_matrix_requested = Signal(object)  # UUID device
     add_port_requested = Signal()
     delete_port_requested = Signal(object)  # UUID
     device_selection_changed = Signal(object)  # UUID | None
@@ -165,9 +172,13 @@ class InventoryView(QWidget):
         )
         self._btn_port_net.clicked.connect(self._on_edit_port_network)
         self._btn_vnic_host = icon_action_button(
-            "vnic", "NIC хоста для vNIC", self._ports_card
+            "vnic", "Port Group / NIC хоста для vNIC", self._ports_card
         )
         self._btn_vnic_host.clicked.connect(self._on_edit_vnic_host)
+        self._btn_patch_matrix = icon_action_button(
+            "port", "Матрица пар Front↔Rear", self._ports_card
+        )
+        self._btn_patch_matrix.clicked.connect(self._on_patch_matrix)
         self._btn_delete_port = icon_action_button(
             "delete", "Удалить порт", self._ports_card, role="danger"
         )
@@ -176,12 +187,13 @@ class InventoryView(QWidget):
         self._ports_card.add_action(self._btn_port_props)
         self._ports_card.add_action(self._btn_port_net)
         self._ports_card.add_action(self._btn_vnic_host)
+        self._ports_card.add_action(self._btn_patch_matrix)
         self._ports_card.add_action(self._btn_delete_port)
         self._ports = QTableWidget(self._ports_card)
         tune_table(self._ports)
         self._ports.setColumnCount(10)
         self._ports.setHorizontalHeaderLabels(
-            ["Имя", "Пара", "MAC", "Скорость", "Среда", "Статус", "Связь", "NIC хоста", "VLAN", "IP"]
+            ["Имя", "Пара", "MAC", "Скорость", "Среда", "Статус", "Связь", "vNIC→", "VLAN", "IP"]
         )
         self._ports.itemDoubleClicked.connect(self._on_edit_port_network)
         self._ports_card.set_body_widget(self._ports)
@@ -202,6 +214,7 @@ class InventoryView(QWidget):
         bottom_tabs.addTab(self._build_vlans_tab(bottom_tabs), "VLAN")
         bottom_tabs.addTab(self._build_ips_tab(bottom_tabs), "IP")
         bottom_tabs.addTab(self._build_lags_tab(bottom_tabs), "LAG")
+        bottom_tabs.addTab(self._build_vswitch_tab(bottom_tabs), "vSwitch")
         bottom_card.set_body_widget(bottom_tabs)
         bottom.addWidget(bottom_card)
 
@@ -230,6 +243,8 @@ class InventoryView(QWidget):
         self._vlans: list[Vlan] = []
         self._ips: list[IpAddress] = []
         self._lags = []
+        self._vswitches = []
+        self._port_groups = []
         self._query = ""
         self._location_kind: str | None = None
         self._location_id: UUID | None = None
@@ -326,9 +341,9 @@ class InventoryView(QWidget):
         layout.addLayout(header)
         self._cables_table = QTableWidget(panel)
         tune_table(self._cables_table)
-        self._cables_table.setColumnCount(6)
+        self._cables_table.setColumnCount(8)
         self._cables_table.setHorizontalHeaderLabels(
-            ["Метка", "Вид", "Категория", "Длина", "Конец A", "Конец B"]
+            ["Метка", "Вид", "Категория", "Цвет", "Назначение", "Длина", "Конец A", "Конец B"]
         )
         self._cables_table.itemDoubleClicked.connect(self._on_edit_cable)
         layout.addWidget(self._cables_table)
@@ -426,6 +441,52 @@ class InventoryView(QWidget):
         layout.addWidget(self._lags_table)
         return panel
 
+    def _build_vswitch_tab(self, parent: QWidget) -> QWidget:
+        panel = QWidget(parent)
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(0, 8, 0, 0)
+        layout.setSpacing(8)
+        header = QHBoxLayout()
+        header.setSpacing(4)
+        header.addStretch(1)
+        self._btn_add_vswitch = icon_action_button(
+            "add", "Добавить vSwitch", panel, role="primary"
+        )
+        self._btn_edit_vswitch = icon_action_button("edit", "Изменить vSwitch", panel)
+        self._btn_delete_vswitch = icon_action_button(
+            "delete", "Удалить vSwitch", panel, role="danger"
+        )
+        self._btn_add_pg = icon_action_button("catalog", "Добавить Port Group", panel)
+        self._btn_edit_pg = icon_action_button("network", "Изменить Port Group", panel)
+        self._btn_delete_pg = icon_action_button(
+            "clear", "Удалить Port Group", panel, role="danger"
+        )
+        self._btn_add_vswitch.clicked.connect(self.add_vswitch_requested.emit)
+        self._btn_edit_vswitch.clicked.connect(self._on_edit_vswitch)
+        self._btn_delete_vswitch.clicked.connect(self._on_delete_vswitch)
+        self._btn_add_pg.clicked.connect(self.add_port_group_requested.emit)
+        self._btn_edit_pg.clicked.connect(self._on_edit_port_group)
+        self._btn_delete_pg.clicked.connect(self._on_delete_port_group)
+        for btn in (
+            self._btn_add_vswitch,
+            self._btn_edit_vswitch,
+            self._btn_delete_vswitch,
+            self._btn_add_pg,
+            self._btn_edit_pg,
+            self._btn_delete_pg,
+        ):
+            header.addWidget(btn)
+        layout.addLayout(header)
+        self._vswitch_table = QTableWidget(panel)
+        tune_table(self._vswitch_table)
+        self._vswitch_table.setColumnCount(5)
+        self._vswitch_table.setHorizontalHeaderLabels(
+            ["Хост", "vSwitch", "Port Group", "VLAN", "Uplink"]
+        )
+        self._vswitch_table.itemDoubleClicked.connect(self._on_edit_port_group)
+        layout.addWidget(self._vswitch_table)
+        return panel
+
     def set_snapshot(self, snapshot: ProjectSnapshot | None) -> None:
         self._snapshot = snapshot
         if snapshot is None:
@@ -436,6 +497,8 @@ class InventoryView(QWidget):
             self._vlans = []
             self._ips = []
             self._lags = []
+            self._vswitches = []
+            self._port_groups = []
             self._refresh_tables(preserve_selection=False)
             return
 
@@ -450,6 +513,8 @@ class InventoryView(QWidget):
         self._vlans = sorted(snapshot.vlans, key=lambda v: v.vlan_id)
         self._ips = list(snapshot.ips)
         self._lags = list(snapshot.lags)
+        self._vswitches = list(snapshot.virtual_switches)
+        self._port_groups = list(snapshot.port_groups)
         self._refresh_tables(preserve_selection=True)
 
     def _refresh_tables(self, *, preserve_selection: bool) -> None:
@@ -475,6 +540,8 @@ class InventoryView(QWidget):
                 self._ips_table.setRowCount(0)
             with table_update(self._lags_table):
                 self._lags_table.setRowCount(0)
+            with table_update(self._vswitch_table):
+                self._vswitch_table.setRowCount(0)
             self._ports_card.set_subtitle("Выберите устройство")
             self._search_hint.setText("")
             return
@@ -513,9 +580,10 @@ class InventoryView(QWidget):
             for row_idx, cable in enumerate(cables):
                 length = f"{cable.length_m:g} м" if cable.length_m is not None else "—"
                 length_key = cable.length_m if cable.length_m is not None else -1.0
-                self._cables_table.setItem(
-                    row_idx, 0, make_item(cable.label or "—", entity_id=cable.id)
-                )
+                path = inventory_service.cable_path_label(snapshot, cable)
+                label_item = make_item(cable.label or "—", entity_id=cable.id)
+                label_item.setToolTip(path)
+                self._cables_table.setItem(row_idx, 0, label_item)
                 self._cables_table.setItem(
                     row_idx, 1, make_item(cable_kind_label(cable.kind))
                 )
@@ -523,18 +591,24 @@ class InventoryView(QWidget):
                     row_idx, 2, make_item(cable_category_label(cable.category))
                 )
                 self._cables_table.setItem(
-                    row_idx, 3, make_item(length, sort_key=length_key)
+                    row_idx, 3, make_item(cable.color or "—")
+                )
+                self._cables_table.setItem(
+                    row_idx, 4, make_item(cable.purpose or "—")
+                )
+                self._cables_table.setItem(
+                    row_idx, 5, make_item(length, sort_key=length_key)
                 )
                 self._cables_table.setItem(
                     row_idx,
-                    4,
+                    6,
                     make_item(
                         inventory_service.port_endpoint_label(snapshot, cable.end_a_port_id)
                     ),
                 )
                 self._cables_table.setItem(
                     row_idx,
-                    5,
+                    7,
                     make_item(
                         inventory_service.port_endpoint_label(snapshot, cable.end_b_port_id)
                     ),
@@ -612,10 +686,62 @@ class InventoryView(QWidget):
                 )
                 self._lags_table.setItem(row_idx, 5, make_item(ips_txt))
 
+        # vSwitch / Port Group rows (одна строка на PG; vSwitch без PG — отдельная строка)
+        vs_rows: list[tuple] = []
+        for vs in self._vswitches:
+            groups = [pg for pg in self._port_groups if pg.vswitch_id == vs.id]
+            if not groups:
+                vs_rows.append((vs, None))
+            else:
+                for pg in groups:
+                    vs_rows.append((vs, pg))
+        if search_service.normalize_query(query):
+            q = search_service.normalize_query(query)
+            filtered = []
+            for vs, pg in vs_rows:
+                host = next((d for d in snapshot.devices if d.id == vs.host_device_id), None)
+                hay = " ".join(
+                    [
+                        vs.name,
+                        host.hostname if host else "",
+                        pg.name if pg else "",
+                    ]
+                ).casefold()
+                if q in hay:
+                    filtered.append((vs, pg))
+            vs_rows = filtered
+        with table_update(self._vswitch_table):
+            self._vswitch_table.setRowCount(len(vs_rows))
+            for row_idx, (vs, pg) in enumerate(vs_rows):
+                host = next((d for d in snapshot.devices if d.id == vs.host_device_id), None)
+                host_name = host.hostname if host else "—"
+                vlan_txt = "—"
+                if pg is not None and pg.vlan_id is not None:
+                    vlan = next((v for v in snapshot.vlans if v.id == pg.vlan_id), None)
+                    vlan_txt = (
+                        f"{vlan.vlan_id}" + (f" — {vlan.name}" if vlan and vlan.name else "")
+                        if vlan
+                        else "?"
+                    )
+                item0 = make_item(host_name, entity_id=vs.id)
+                item0.setData(Qt.ItemDataRole.UserRole + 1, str(pg.id) if pg else "")
+                self._vswitch_table.setItem(row_idx, 0, item0)
+                self._vswitch_table.setItem(row_idx, 1, make_item(vs.name))
+                self._vswitch_table.setItem(
+                    row_idx, 2, make_item(pg.name if pg else "—")
+                )
+                self._vswitch_table.setItem(row_idx, 3, make_item(vlan_txt))
+                self._vswitch_table.setItem(
+                    row_idx,
+                    4,
+                    make_item(inventory_service.vswitch_uplink_labels(snapshot, vs)),
+                )
+
         if search_service.normalize_query(query):
             self._search_hint.setText(
                 f"уст. {len(devices)} · каб. {len(cables)} · "
-                f"VLAN {len(vlans)} · IP {len(ips)} · LAG {len(lags)}"
+                f"VLAN {len(vlans)} · IP {len(ips)} · LAG {len(lags)} · "
+                f"vSw {len(vs_rows)}"
             )
         else:
             self._search_hint.setText("")
@@ -657,6 +783,19 @@ class InventoryView(QWidget):
     def selected_lag_id(self) -> UUID | None:
         return self._selected_id(self._lags_table)
 
+    def selected_vswitch_id(self) -> UUID | None:
+        return self._selected_id(self._vswitch_table)
+
+    def selected_port_group_id(self) -> UUID | None:
+        rows = self._vswitch_table.selectionModel().selectedRows()
+        if not rows:
+            return None
+        item = self._vswitch_table.item(rows[0].row(), 0)
+        if item is None:
+            return None
+        raw = item.data(Qt.ItemDataRole.UserRole + 1)
+        return UUID(str(raw)) if raw else None
+
     def selected_port_id(self) -> UUID | None:
         return self._selected_id(self._ports)
 
@@ -696,10 +835,18 @@ class InventoryView(QWidget):
             )
             self._btn_vnic_host.setVisible(device is not None and device.role == DeviceRole.VIRTUAL_MACHINE)
             self._btn_vnic_host.setEnabled(show_vnic)
+            self._btn_patch_matrix.setVisible(
+                device is not None and device.role == DeviceRole.PATCH_PANEL
+            )
+            self._btn_patch_matrix.setEnabled(
+                device is not None and device.role == DeviceRole.PATCH_PANEL
+            )
         else:
             self._ports_card.set_subtitle("Выберите устройство")
             self._btn_vnic_host.setVisible(False)
             self._btn_vnic_host.setEnabled(False)
+            self._btn_patch_matrix.setVisible(False)
+            self._btn_patch_matrix.setEnabled(False)
 
         with table_update(self._ports):
             self._ports.setRowCount(len(ports))
@@ -765,7 +912,7 @@ class InventoryView(QWidget):
                 self._ports.setItem(row_idx, 5, status_item)
                 self._ports.setItem(row_idx, 6, make_item(link))
                 host_nic = (
-                    inventory_service.vnic_host_port_label(snapshot, p.id)
+                    inventory_service.vnic_binding_label(snapshot, p.id)
                     if snapshot is not None and p.media == PortMedia.VIRTUAL
                     else "—"
                 )
@@ -851,6 +998,30 @@ class InventoryView(QWidget):
         if lag_id is not None:
             self.delete_lag_requested.emit(lag_id)
 
+    def _on_edit_vswitch(self) -> None:
+        vs_id = self.selected_vswitch_id()
+        if vs_id is not None:
+            self.edit_vswitch_requested.emit(vs_id)
+
+    def _on_delete_vswitch(self) -> None:
+        vs_id = self.selected_vswitch_id()
+        if vs_id is not None:
+            self.delete_vswitch_requested.emit(vs_id)
+
+    def _on_edit_port_group(self) -> None:
+        pg_id = self.selected_port_group_id()
+        if pg_id is not None:
+            self.edit_port_group_requested.emit(pg_id)
+        else:
+            vs_id = self.selected_vswitch_id()
+            if vs_id is not None:
+                self.edit_vswitch_requested.emit(vs_id)
+
+    def _on_delete_port_group(self) -> None:
+        pg_id = self.selected_port_group_id()
+        if pg_id is not None:
+            self.delete_port_group_requested.emit(pg_id)
+
     def _on_edit_port_network(self) -> None:
         port_id = self.selected_port_id()
         if port_id is not None:
@@ -865,6 +1036,11 @@ class InventoryView(QWidget):
         port_id = self.selected_port_id()
         if port_id is not None:
             self.edit_vnic_host_requested.emit(port_id)
+
+    def _on_patch_matrix(self) -> None:
+        device_id = self.selected_device_id()
+        if device_id is not None:
+            self.patch_matrix_requested.emit(device_id)
 
     def _on_delete_port(self) -> None:
         port_id = self.selected_port_id()

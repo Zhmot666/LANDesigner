@@ -22,6 +22,7 @@ class ReportKind(StrEnum):
     PORTS = "ports"
     CABLES = "cables"
     VLANS = "vlans"
+    RACKS = "racks"
 
 
 REPORT_TITLES: dict[ReportKind, str] = {
@@ -29,6 +30,7 @@ REPORT_TITLES: dict[ReportKind, str] = {
     ReportKind.PORTS: "Порт-матрица",
     ReportKind.CABLES: "Кабели",
     ReportKind.VLANS: "VLAN map",
+    ReportKind.RACKS: "Шкафы / юниты",
 }
 
 
@@ -49,6 +51,8 @@ def build_report(snapshot: ProjectSnapshot, kind: ReportKind) -> ReportTable:
         return _cables_report(snapshot)
     if kind == ReportKind.VLANS:
         return _vlans_report(snapshot)
+    if kind == ReportKind.RACKS:
+        return _racks_report(snapshot)
     raise ValueError(f"Неизвестный отчёт: {kind}")
 
 
@@ -205,15 +209,28 @@ def _cables_report(snapshot: ProjectSnapshot) -> ReportTable:
                 cable_kind_label(cable.kind),
                 cable_category_label(cable.category),
                 length,
+                cable.color,
+                cable.purpose,
                 inv.port_endpoint_label(snapshot, cable.end_a_port_id),
                 inv.port_endpoint_label(snapshot, cable.end_b_port_id),
+                inv.cable_path_label(snapshot, cable),
             ]
         )
-    rows.sort(key=lambda r: (r[0].casefold(), r[4].casefold()))
+    rows.sort(key=lambda r: (r[0].casefold(), r[6].casefold()))
     return ReportTable(
         ReportKind.CABLES,
         REPORT_TITLES[ReportKind.CABLES],
-        ["Метка", "Вид", "Категория", "Длина, м", "Конец A", "Конец B"],
+        [
+            "Метка",
+            "Вид",
+            "Категория",
+            "Длина, м",
+            "Цвет",
+            "Назначение",
+            "Конец A",
+            "Конец B",
+            "Путь",
+        ],
         rows,
     )
 
@@ -250,6 +267,65 @@ def _vlans_report(snapshot: ProjectSnapshot) -> ReportTable:
             "Access",
             "Tagged портов",
             "Tagged",
+        ],
+        rows,
+    )
+
+
+def _racks_report(snapshot: ProjectSnapshot) -> ReportTable:
+    rooms = {r.id: r for r in snapshot.rooms}
+    rows: list[list[str]] = []
+    for rack in sorted(snapshot.racks, key=lambda r: r.name.casefold()):
+        room = rooms.get(rack.room_id)
+        free = inv.rack_free_units(snapshot, rack.id)
+        used = max(0, int(rack.units) - len(free))
+        devices = inv.devices_in_rack(snapshot, rack.id)
+        device_labels: list[str] = []
+        for device in devices:
+            label = device.hostname
+            place = inv.rack_placement_label(device)
+            if place:
+                label = f"{label} ({place})"
+            device_labels.append(label)
+        free_txt = ""
+        if free:
+            ranges: list[str] = []
+            start = prev = free[0]
+            for u in free[1:]:
+                if u == prev + 1:
+                    prev = u
+                    continue
+                ranges.append(f"U{start}" if start == prev else f"U{start}–{prev}")
+                start = prev = u
+            ranges.append(f"U{start}" if start == prev else f"U{start}–{prev}")
+            free_txt = ", ".join(ranges)
+        pct = f"{100 * used / rack.units:.0f}%" if rack.units else "—"
+        rows.append(
+            [
+                rack.name,
+                room.name if room else "",
+                str(rack.units),
+                str(used),
+                str(len(free)),
+                pct,
+                str(len(devices)),
+                ", ".join(device_labels) or "—",
+                free_txt or "—",
+            ]
+        )
+    return ReportTable(
+        ReportKind.RACKS,
+        REPORT_TITLES[ReportKind.RACKS],
+        [
+            "Шкаф",
+            "Комната",
+            "Всего U",
+            "Занято U",
+            "Свободно U",
+            "Заполнение",
+            "Устройств",
+            "Монтаж",
+            "Свободные юниты",
         ],
         rows,
     )

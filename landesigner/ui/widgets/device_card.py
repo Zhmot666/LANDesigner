@@ -255,7 +255,7 @@ class ContextCard(QWidget):
         form.addRow("Инв. №", self._dev_tag)
         form.addRow("Гипервизор", self._dev_host)
         form.addRow("ВМ", self._dev_vms)
-        form.addRow("vNIC → NIC", self._dev_vnics)
+        form.addRow("vNIC →", self._dev_vnics)
         form.addRow("Расположение", self._dev_location)
         form.addRow("Порты", self._dev_ports)
         form.addRow("LAG", self._dev_lags)
@@ -478,7 +478,7 @@ class ContextCard(QWidget):
             for port in inv.ports_for_device(snap, device.id):
                 if port.media != PortMedia.VIRTUAL:
                     continue
-                nic = inv.vnic_host_port_label(snap, port.id)
+                nic = inv.vnic_binding_label(snap, port.id)
                 vnic_lines.append(f"{port.name} → {nic}")
             self._dev_vnics.setText("\n".join(vnic_lines) if vnic_lines else "—")
         else:
@@ -496,6 +496,24 @@ class ContextCard(QWidget):
             )
         else:
             self._dev_lags.setText("—")
+        if device.role == DeviceRole.HYPERVISOR:
+            switches = inv.vswitches_for_host(snap, device.id)
+            if switches:
+                lines = []
+                for vs in switches:
+                    groups = inv.port_groups_for_vswitch(snap, vs.id)
+                    gtxt = ", ".join(pg.name for pg in groups) or "—"
+                    lines.append(
+                        f"{vs.name} · uplink {inv.vswitch_uplink_labels(snap, vs)} · PG: {gtxt}"
+                    )
+                # Показываем под LAG, если LAG пуст — в той же строке смысла мало;
+                # дополняем LAG-поле суффиксом vSwitch при отсутствии LAG.
+                if not lags:
+                    self._dev_lags.setText("\n".join(lines))
+                else:
+                    self._dev_lags.setText(
+                        self._dev_lags.text() + "\n" + "\n".join(lines)
+                    )
         self._update_rack_nav()
 
     def _set_nav_visible(self, visible: bool) -> None:

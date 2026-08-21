@@ -114,3 +114,89 @@ class MountRackDeviceCommand(QUndoCommand):
         )
         if self._on_changed:
             self._on_changed()
+
+
+class UnmountRackDeviceCommand(QUndoCommand):
+    def __init__(
+        self,
+        snapshot: ProjectSnapshot,
+        device_id: UUID,
+        *,
+        on_changed=None,
+    ) -> None:
+        super().__init__("Снятие со стойки")
+        self._snapshot = snapshot
+        self._device_id = device_id
+        device = next((d for d in snapshot.devices if d.id == device_id), None)
+        self._prev_rack_id = device.rack_id if device is not None else None
+        self._prev_rack_u = device.rack_u if device is not None else None
+        self._prev_rack_h = device.rack_u_height if device is not None else 1
+        self._prev_room_id = device.room_id if device is not None else None
+        self._on_changed = on_changed
+
+    def redo(self) -> None:
+        inv.set_device_rack_placement(
+            self._snapshot,
+            self._device_id,
+            rack_id=None,
+            rack_u=None,
+            rack_u_height=1,
+            room_id=self._prev_room_id,
+        )
+        if self._on_changed:
+            self._on_changed()
+
+    def undo(self) -> None:
+        if self._prev_rack_id is None:
+            return
+        inv.set_device_rack_placement(
+            self._snapshot,
+            self._device_id,
+            rack_id=self._prev_rack_id,
+            rack_u=self._prev_rack_u,
+            rack_u_height=self._prev_rack_h or 1,
+            room_id=self._prev_room_id,
+        )
+        if self._on_changed:
+            self._on_changed()
+
+
+class ResizeRackDeviceCommand(QUndoCommand):
+    def __init__(
+        self,
+        snapshot: ProjectSnapshot,
+        device_id: UUID,
+        old_height: int,
+        new_height: int,
+        *,
+        on_changed=None,
+    ) -> None:
+        super().__init__("Высота в стойке")
+        self._snapshot = snapshot
+        self._device_id = device_id
+        self._old = max(1, int(old_height))
+        self._new = max(1, int(new_height))
+        self._on_changed = on_changed
+
+    def _apply(self, height: int) -> None:
+        device = next((d for d in self._snapshot.devices if d.id == self._device_id), None)
+        if device is None or device.rack_id is None or device.rack_u is None:
+            return
+        inv.set_device_rack_placement(
+            self._snapshot,
+            self._device_id,
+            rack_id=device.rack_id,
+            rack_u=device.rack_u,
+            rack_u_height=height,
+            room_id=device.room_id,
+        )
+
+    def redo(self) -> None:
+        self._apply(self._new)
+        if self._on_changed:
+            self._on_changed()
+
+    def undo(self) -> None:
+        self._apply(self._old)
+        if self._on_changed:
+            self._on_changed()

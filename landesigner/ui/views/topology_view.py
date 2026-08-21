@@ -32,8 +32,10 @@ from landesigner.services import topology as topo_service
 from landesigner.ui.commands.topology_commands import (
     AddCableCommand,
     DeleteCableCommand,
+    LayoutTopologyCommand,
     MoveNodeCommand,
 )
+from landesigner.ui.icons import icon_action_button
 from landesigner.ui.labels import role_label
 from landesigner.ui.widgets.topology_items import (
     ROLE_COLORS,
@@ -122,7 +124,7 @@ class TopologyView(QWidget):
         toolbar = QHBoxLayout()
         toolbar.setSpacing(8)
         self._hint = QLabel(
-            "Колёсико — зум · Shift+ЛКМ — пан · Соединить — два узла · Delete — связь",
+            "Колёсико — зум · Shift+ЛКМ — пан · узлы к сетке · Delete — связь",
             self,
         )
         self._hint.setObjectName("PanelSubtitle")
@@ -133,11 +135,13 @@ class TopologyView(QWidget):
         self._btn_connect.setProperty("role", "primary")
         self._btn_delete = QPushButton("Удалить связь", self)
         self._btn_delete.setEnabled(False)
-        self._btn_fit = QPushButton("Вписать", self)
+        self._btn_layout = icon_action_button("topology", "Автораскладка узлов", self)
+        self._btn_fit = icon_action_button("plan", "Вписать схему", self)
         self._btn_undo = QPushButton("Отменить", self)
         self._btn_redo = QPushButton("Повторить", self)
         self._btn_connect.toggled.connect(self._on_connect_toggled)
         self._btn_delete.clicked.connect(self._delete_selected_link)
+        self._btn_layout.clicked.connect(self._auto_layout)
         self._btn_fit.clicked.connect(self.fit_content)
         self._btn_undo.clicked.connect(self._undo.undo)
         self._btn_redo.clicked.connect(self._undo.redo)
@@ -148,6 +152,7 @@ class TopologyView(QWidget):
         toolbar.addWidget(self._hint, stretch=1)
         toolbar.addWidget(self._btn_connect)
         toolbar.addWidget(self._btn_delete)
+        toolbar.addWidget(self._btn_layout)
         toolbar.addWidget(self._btn_undo)
         toolbar.addWidget(self._btn_redo)
         toolbar.addWidget(self._btn_fit)
@@ -230,6 +235,8 @@ class TopologyView(QWidget):
         kind: CableKind = CableKind.COPPER,
         category: CableCategory = CableCategory.OTHER,
         length_m: float | None = None,
+        color: str = "",
+        purpose: str = "",
     ) -> None:
         if self._snapshot is None:
             return
@@ -241,6 +248,8 @@ class TopologyView(QWidget):
             kind=kind,
             category=category,
             length_m=length_m,
+            color=color,
+            purpose=purpose,
             on_changed=self._on_cable_command_changed,
         )
         self._undo.push(cmd)
@@ -307,7 +316,7 @@ class TopologyView(QWidget):
         else:
             self._view.setDragMode(QGraphicsView.DragMode.RubberBandDrag)
             self._hint.setText(
-                "Колёсико — зум · Shift+ЛКМ — пан · Соединить — два узла · Delete — связь"
+                "Колёсико — зум · Shift+ЛКМ — пан · узлы к сетке · Delete — связь"
             )
             self._view.unsetCursor()
             self._clear_connect_highlight()
@@ -386,6 +395,31 @@ class TopologyView(QWidget):
 
     def _on_cable_command_changed(self) -> None:
         self._rebuild()
+
+    def _auto_layout(self) -> None:
+        if self._snapshot is None:
+            return
+        before = {n.id: (n.x, n.y) for n in self._snapshot.topology_nodes}
+        changes_new = topo_service.auto_layout(self._snapshot)
+        if not changes_new:
+            return
+        changes = {
+            nid: (before[nid][0], before[nid][1], nx, ny)
+            for nid, (_ox, _oy, nx, ny) in changes_new.items()
+            if nid in before
+        }
+        # Откат к before — redo команды применит new
+        topo_service.apply_layout_positions(self._snapshot, before)
+        cmd = LayoutTopologyCommand(
+            self._snapshot,
+            changes,
+            on_changed=self._apply_positions_from_snapshot,
+        )
+        if cmd.isObsolete():
+            return
+        self._undo.push(cmd)
+        self.fit_content()
+        self.topology_changed.emit()
 
     def _rebuild(self) -> None:
         if self._rebuild_guard:

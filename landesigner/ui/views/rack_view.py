@@ -5,6 +5,7 @@ from uuid import UUID
 from PySide6.QtCore import QEvent, QPoint, Qt, Signal
 from PySide6.QtGui import QBrush, QColor, QFont, QPainter, QPen, QUndoStack, QWheelEvent
 from PySide6.QtWidgets import (
+    QButtonGroup,
     QComboBox,
     QFrame,
     QGraphicsLineItem,
@@ -12,22 +13,32 @@ from PySide6.QtWidgets import (
     QGraphicsTextItem,
     QGraphicsView,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
+    QMenu,
     QMessageBox,
     QPushButton,
+    QRadioButton,
     QVBoxLayout,
     QWidget,
 )
 
 from landesigner.domain.entities import ProjectSnapshot, Rack
-from landesigner.domain.enums import DeviceRole
+from landesigner.domain.enums import DeviceRole, PortSide
 from landesigner.services import inventory as inv
-from landesigner.ui.commands.rack_commands import MountRackDeviceCommand, MoveRackDeviceCommand
+from landesigner.ui.commands.rack_commands import (
+    MountRackDeviceCommand,
+    MoveRackDeviceCommand,
+    ResizeRackDeviceCommand,
+    UnmountRackDeviceCommand,
+)
+from landesigner.ui.icons import icon_action_button
 from landesigner.ui.widgets.rack_items import (
     FRAME_TOP,
     LABEL_WIDTH,
     RACK_INNER_WIDTH,
     U_HEIGHT,
+    FreeUnitHighlight,
     RackDeviceItem,
     unit_top_y,
 )
@@ -51,7 +62,7 @@ class RackScene(QGraphicsScene):
 
 
 class RackView(QWidget):
-    """Чертёж стойки: юниты U, drag-and-drop устройств."""
+    """Чертёж стойки: юниты U, Front/Rear, drag-and-drop устройств."""
 
     rack_changed = Signal()
     device_selected = Signal(object)  # UUID | None
@@ -60,7 +71,9 @@ class RackView(QWidget):
         super().__init__(parent)
         self._snapshot: ProjectSnapshot | None = None
         self._rack_id: UUID | None = None
+        self._face = PortSide.FRONT
         self._items: dict[UUID, RackDeviceItem] = {}
+        self._free_highlights: list[FreeUnitHighlight] = []
         self._grid_lines: list[QGraphicsLineItem] = []
         self._unit_labels: list[QGraphicsTextItem] = []
         self._undo = QUndoStack(self)
@@ -83,11 +96,24 @@ class RackView(QWidget):
         self._add_combo = QComboBox(self)
         self._add_combo.setMinimumWidth(180)
         toolbar.addWidget(self._add_combo, stretch=1)
-        self._btn_add = QPushButton("В стойку", self)
+        self._btn_add = icon_action_button("add", "Монтировать в стойку", self, role="primary")
         self._btn_add.clicked.connect(self._mount_selected_device)
         toolbar.addWidget(self._btn_add)
 
-        self._btn_fit = QPushButton("Вписать", self)
+        face_box = QHBoxLayout()
+        face_box.setSpacing(4)
+        self._face_group = QButtonGroup(self)
+        self._radio_front = QRadioButton("Front", self)
+        self._radio_rear = QRadioButton("Rear", self)
+        self._radio_front.setChecked(True)
+        self._face_group.addButton(self._radio_front, 0)
+        self._face_group.addButton(self._radio_rear, 1)
+        self._face_group.idToggled.connect(self._on_face_toggled)
+        face_box.addWidget(self._radio_front)
+        face_box.addWidget(self._radio_rear)
+        toolbar.addLayout(face_box)
+
+        self._btn_fit = icon_action_button("rack", "Вписать стойку", self)
         self._btn_undo = QPushButton("Отменить", self)
         self._btn_redo = QPushButton("Повторить", self)
         self._btn_fit.clicked.connect(self.fit_content)
@@ -115,18 +141,17 @@ class RackView(QWidget):
             QGraphicsView.ViewportUpdateMode.BoundingRectViewportUpdate
         )
         self._view.setFrameShape(QFrame.Shape.NoFrame)
+        self._view.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self._view.customContextMenuRequested.connect(self._on_context_menu)
         self._view.viewport().installEventFilter(self)
         body.addWidget(self._view, stretch=1)
         root.addLayout(body, stretch=1)
 
-        hint = QLabel(
-            "Перетащите блок по вертикали для смены юнита. "
-            "U1 — снизу, как на реальной стойке.",
-            self,
-        )
-        hint.setObjectName("HintLabel")
-        hint.setWordWrap(True)
-        root.addWidget(hint)
+        self._status = QLabel(self)
+        self._status.setObjectName("HintLabel")
+        self._status.setWordWrap(True)
+        root.addWidget(self._status)
+        self._update_status_hint()
 
     def eventFilter(self, obj, event) -> bool:  # noqa: N802
         if obj is self._view.viewport():
@@ -209,6 +234,29 @@ class RackView(QWidget):
             return None
         return next((r for r in self._snapshot.racks if r.id == self._rack_id), None)
 
+    def _on_face_toggled(self, button_id: int, checked: bool) -> None:
+        if not checked:
+            return
+        self._face = PortSide.FRONT if button_id == 0 else PortSide.REAR
+        self._rebuild()
+
+    def _update_status_hint(self) -> None:
+        rack = self._current_rack()
+        snap = self._snapshot
+        face = "Front" if self._face == PortSide.FRONT else "Rear"
+        if rack is None or snap is None:
+            self._status.setText(
+                f"Вид: {face}. Выберите шкаф. ПКМ по устройству — снять / высота U."
+            )
+            return
+        free = inv.rack_free_units(snap, rack.id)
+        used = rack.units - len(free)
+        self._status.setText(
+            f"Вид: {face} · {rack.units}U · занято {used}, свободно {len(free)}. "
+            "Перетащите блок по вертикали; ПКМ — снять со стойки / высота U. "
+            "U1 — снизу."
+        )
+
     def _reload_racks(self, *, prefer: UUID | None = None) -> None:
         self._rack_combo.blockSignals(True)
         self._rack_combo.clear()
@@ -267,6 +315,7 @@ class RackView(QWidget):
         try:
             self._scene.clear()
             self._items.clear()
+            self._free_highlights.clear()
             self._grid_lines.clear()
             self._unit_labels.clear()
             self._reload_add_combo()
@@ -275,6 +324,7 @@ class RackView(QWidget):
             snap = self._snapshot
             if rack is None or snap is None:
                 self._scene.setSceneRect(0, 0, 400, 300)
+                self._update_status_hint()
                 return
 
             units = max(1, int(rack.units))
@@ -291,6 +341,12 @@ class RackView(QWidget):
                 QBrush(QColor("#ffffff")),
             )
             frame.setZValue(0)
+
+            free = set(inv.rack_free_units(snap, rack.id))
+            for u in free:
+                hl = FreeUnitHighlight(units, u)
+                self._scene.addItem(hl)
+                self._free_highlights.append(hl)
 
             label_font = QFont("Segoe UI", 7)
             for u in range(1, units + 1):
@@ -311,11 +367,24 @@ class RackView(QWidget):
                     text.setZValue(1)
                     self._unit_labels.append(text)
 
+            title = self._scene.addText(
+                "Front" if self._face == PortSide.FRONT else "Rear",
+                QFont("Segoe UI", 9, QFont.Weight.DemiBold),
+            )
+            title.setDefaultTextColor(QColor("#2f7c85"))
+            title.setPos(LABEL_WIDTH, max(0.0, FRAME_TOP - 18))
+            title.setZValue(1)
+
             for device in inv.devices_in_rack(snap, rack.id):
                 dtype = next((t for t in snap.device_types if t.id == device.device_type_id), None)
                 role = device.role if dtype is None else dtype.role
                 height_u = max(1, int(device.rack_u_height or 1))
                 rack_u = int(device.rack_u or 1)
+                side_total = side_busy = 0
+                if role == DeviceRole.PATCH_PANEL:
+                    side_total, side_busy = inv.rack_side_port_summary(
+                        snap, device.id, self._face
+                    )
                 item = RackDeviceItem(
                     device.id,
                     device.hostname,
@@ -323,11 +392,19 @@ class RackView(QWidget):
                     rack_u,
                     height_u,
                     units,
+                    face=self._face,
+                    side_total=side_total,
+                    side_busy=side_busy,
                 )
+                occupied = inv.rack_occupied_units(
+                    snap, rack.id, exclude_device_id=device.id
+                )
+                item.set_occupied_units(occupied)
                 self._scene.addItem(item)
                 self._items[device.id] = item
 
             self.fit_content()
+            self._update_status_hint()
         finally:
             self._rebuild_guard = False
 
@@ -335,13 +412,7 @@ class RackView(QWidget):
         snap = self._snapshot
         if snap is None:
             return None
-        used: set[int] = set()
-        for device in inv.devices_in_rack(snap, rack.id):
-            rng = inv.rack_u_range(device)
-            if rng is None:
-                continue
-            start, end = rng
-            used.update(range(start, end + 1))
+        used = inv.rack_occupied_units(snap, rack.id)
         height = max(1, int(height_u))
         for candidate in range(1, rack.units - height + 2):
             block = set(range(candidate, candidate + height))
@@ -398,6 +469,71 @@ class RackView(QWidget):
                 device_id,
                 old_rack_u,
                 new_rack_u,
+                on_changed=self._after_change,
+            )
+            self._undo.push(cmd)
+        except Exception as exc:
+            QMessageBox.warning(self, "Стойка", str(exc))
+            self._rebuild()
+
+    def _item_at(self, view_pos: QPoint) -> RackDeviceItem | None:
+        scene_pos = self._view.mapToScene(view_pos)
+        for gitem in self._scene.items(scene_pos):
+            if isinstance(gitem, RackDeviceItem):
+                return gitem
+        return None
+
+    def _on_context_menu(self, pos: QPoint) -> None:
+        item = self._item_at(pos)
+        if item is None:
+            return
+        menu = QMenu(self)
+        act_unmount = menu.addAction("Снять со стойки")
+        act_height = menu.addAction("Высота U…")
+        chosen = menu.exec(self._view.mapToGlobal(pos))
+        if chosen is act_unmount:
+            self._unmount_device(item.device_id)
+        elif chosen is act_height:
+            self._resize_device(item.device_id)
+
+    def _unmount_device(self, device_id: UUID) -> None:
+        snap = self._snapshot
+        if snap is None:
+            return
+        try:
+            cmd = UnmountRackDeviceCommand(
+                snap, device_id, on_changed=self._after_change
+            )
+            self._undo.push(cmd)
+        except Exception as exc:
+            QMessageBox.warning(self, "Стойка", str(exc))
+
+    def _resize_device(self, device_id: UUID) -> None:
+        snap = self._snapshot
+        rack = self._current_rack()
+        if snap is None or rack is None:
+            return
+        device = next((d for d in snap.devices if d.id == device_id), None)
+        if device is None or device.rack_u is None:
+            return
+        old_h = max(1, int(device.rack_u_height or 1))
+        max_h = rack.units - int(device.rack_u) + 1
+        value, ok = QInputDialog.getInt(
+            self,
+            "Высота в U",
+            f"Высота «{device.hostname}» (U):",
+            old_h,
+            1,
+            max(1, max_h),
+        )
+        if not ok or value == old_h:
+            return
+        try:
+            cmd = ResizeRackDeviceCommand(
+                snap,
+                device_id,
+                old_h,
+                value,
                 on_changed=self._after_change,
             )
             self._undo.push(cmd)

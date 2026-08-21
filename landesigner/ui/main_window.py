@@ -37,10 +37,12 @@ from landesigner.ui.dialogs.inventory_dialogs import (
     IpDialog,
     LagDialog,
     NameDialog,
+    PortGroupDialog,
     PortNetworkDialog,
     PortPropertiesDialog,
     ProjectDialog,
     RackDialog,
+    VirtualSwitchDialog,
     VlanDialog,
     VnicHostDialog,
 )
@@ -278,11 +280,18 @@ class MainWindow(QMainWindow):
         self._inventory_view.add_lag_requested.connect(self._on_add_lag)
         self._inventory_view.edit_lag_requested.connect(self._on_edit_lag)
         self._inventory_view.delete_lag_requested.connect(self._on_delete_lag)
+        self._inventory_view.add_vswitch_requested.connect(self._on_add_vswitch)
+        self._inventory_view.edit_vswitch_requested.connect(self._on_edit_vswitch)
+        self._inventory_view.delete_vswitch_requested.connect(self._on_delete_vswitch)
+        self._inventory_view.add_port_group_requested.connect(self._on_add_port_group)
+        self._inventory_view.edit_port_group_requested.connect(self._on_edit_port_group)
+        self._inventory_view.delete_port_group_requested.connect(self._on_delete_port_group)
         self._inventory_view.edit_port_network_requested.connect(self._on_edit_port_network)
         self._inventory_view.edit_port_properties_requested.connect(
             self._on_edit_port_properties
         )
         self._inventory_view.edit_vnic_host_requested.connect(self._on_edit_vnic_host)
+        self._inventory_view.patch_matrix_requested.connect(self._on_patch_matrix)
         self._inventory_view.add_port_requested.connect(self._on_add_port)
         self._inventory_view.delete_port_requested.connect(self._on_delete_port)
         self._topology_view.topology_changed.connect(self._on_topology_changed)
@@ -589,7 +598,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Кабель", "Выберите оба порта.")
             return
         try:
-            end_a, end_b, label, kind, category, length_m = dlg.values()
+            end_a, end_b, label, kind, category, length_m, color, purpose = dlg.values()
             self._topology_view.apply_add_cable(
                 end_a,
                 end_b,
@@ -597,6 +606,8 @@ class MainWindow(QMainWindow):
                 kind=kind,
                 category=category,
                 length_m=length_m,
+                color=color,
+                purpose=purpose,
             )
         except Exception as e:
             QMessageBox.critical(self, "Кабель", str(e))
@@ -1493,7 +1504,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Кабель", "Выберите оба порта.")
             return
         try:
-            end_a, end_b, label, kind, category, length_m = dlg.values()
+            end_a, end_b, label, kind, category, length_m, color, purpose = dlg.values()
             cable = inventory_service.add_cable(
                 snapshot,
                 end_a,
@@ -1502,6 +1513,8 @@ class MainWindow(QMainWindow):
                 kind=kind,
                 category=category,
                 length_m=length_m,
+                color=color,
+                purpose=purpose,
             )
         except Exception as e:
             QMessageBox.critical(self, "Кабель", str(e))
@@ -1523,7 +1536,7 @@ class MainWindow(QMainWindow):
         if dlg.exec() != CableDialog.DialogCode.Accepted:
             return
         try:
-            _, _, label, kind, category, length_m = dlg.values()
+            _, _, label, kind, category, length_m, color, purpose = dlg.values()
             inventory_service.update_cable(
                 snapshot,
                 cable_id,
@@ -1532,6 +1545,8 @@ class MainWindow(QMainWindow):
                 category=category,
                 length_m=length_m,
                 clear_length=length_m is None,
+                color=color,
+                purpose=purpose,
             )
         except Exception as e:
             QMessageBox.critical(self, "Кабель", str(e))
@@ -1552,6 +1567,55 @@ class MainWindow(QMainWindow):
         inventory_service.delete_cable(snapshot, cable_id)
         self._mark_dirty()
         self.statusBar().showMessage("Кабель удалён")
+
+    def _on_patch_matrix(self, device_id: UUID) -> None:
+        snapshot = self._require_snapshot()
+        if snapshot is None:
+            return
+        device = next((d for d in snapshot.devices if d.id == device_id), None)
+        if device is None:
+            return
+        from landesigner.domain.enums import DeviceRole
+        from landesigner.ui.dialogs.patch_panel_dialog import PatchPanelMatrixDialog
+
+        if device.role != DeviceRole.PATCH_PANEL:
+            QMessageBox.information(self, "Матрица пар", "Выберите патч-панель.")
+            return
+        dlg = PatchPanelMatrixDialog(snapshot, device_id, parent=self)
+
+        def _connect(port_id: object) -> None:
+            if not isinstance(port_id, UUID):
+                return
+            cable_dlg = CableDialog(snapshot, parent=self, port_a_id=port_id)
+            if cable_dlg.exec() != CableDialog.DialogCode.Accepted:
+                return
+            if not cable_dlg.is_valid():
+                QMessageBox.warning(self, "Кабель", "Выберите оба порта.")
+                return
+            try:
+                end_a, end_b, label, kind, category, length_m, color, purpose = (
+                    cable_dlg.values()
+                )
+                inventory_service.add_cable(
+                    snapshot,
+                    end_a,
+                    end_b,
+                    label=label,
+                    kind=kind,
+                    category=category,
+                    length_m=length_m,
+                    color=color,
+                    purpose=purpose,
+                )
+            except Exception as e:
+                QMessageBox.critical(self, "Кабель", str(e))
+                return
+            self._mark_dirty()
+            dlg.reload()
+            self.statusBar().showMessage("Кабель с патч-панели добавлен")
+
+        dlg.connect_port_requested.connect(_connect)
+        dlg.exec()
 
     def _on_add_vlan(self) -> None:
         snapshot = self._require_snapshot()
@@ -1832,12 +1896,153 @@ class MainWindow(QMainWindow):
         if dlg.exec() != VnicHostDialog.DialogCode.Accepted:
             return
         try:
-            inventory_service.set_vnic_host_port(snapshot, port_id, dlg.host_port_id())
+            pg_id = dlg.port_group_id()
+            if pg_id is not None:
+                inventory_service.set_vnic_port_group(snapshot, port_id, pg_id)
+            else:
+                inventory_service.set_vnic_port_group(snapshot, port_id, None)
+                inventory_service.set_vnic_host_port(snapshot, port_id, dlg.host_port_id())
         except Exception as e:
             QMessageBox.critical(self, "vNIC", str(e))
             return
         self._mark_dirty()
-        self.statusBar().showMessage("Привязка vNIC → NIC хоста обновлена")
+        self.statusBar().showMessage("Привязка vNIC обновлена")
+
+    def _on_add_vswitch(self) -> None:
+        snapshot = self._require_snapshot()
+        if snapshot is None:
+            return
+        from landesigner.domain.enums import DeviceRole
+
+        preferred_host = self._inventory_view.selected_device_id()
+        if preferred_host is not None:
+            device = next((d for d in snapshot.devices if d.id == preferred_host), None)
+            if device is None or device.role != DeviceRole.HYPERVISOR:
+                preferred_host = None
+        dlg = VirtualSwitchDialog(snapshot, preferred_host_id=preferred_host, parent=self)
+        if dlg.exec() != VirtualSwitchDialog.DialogCode.Accepted:
+            return
+        host_id, name, uplinks, notes = dlg.values()
+        if host_id is None:
+            return
+        try:
+            vs = inventory_service.add_virtual_switch(
+                snapshot, host_id, name, uplink_port_ids=uplinks, notes=notes
+            )
+        except Exception as e:
+            QMessageBox.critical(self, "vSwitch", str(e))
+            return
+        self._mark_dirty()
+        self.statusBar().showMessage(f"Добавлен vSwitch {vs.name}")
+
+    def _on_edit_vswitch(self, vswitch_id: UUID) -> None:
+        snapshot = self._require_snapshot()
+        if snapshot is None:
+            return
+        vs = next((item for item in snapshot.virtual_switches if item.id == vswitch_id), None)
+        if vs is None:
+            return
+        dlg = VirtualSwitchDialog(snapshot, vswitch=vs, parent=self)
+        if dlg.exec() != VirtualSwitchDialog.DialogCode.Accepted:
+            return
+        _, name, uplinks, notes = dlg.values()
+        try:
+            inventory_service.update_virtual_switch(
+                snapshot, vswitch_id, name=name, uplink_port_ids=uplinks, notes=notes
+            )
+        except Exception as e:
+            QMessageBox.critical(self, "vSwitch", str(e))
+            return
+        self._mark_dirty()
+        self.statusBar().showMessage(f"Обновлён vSwitch {name}")
+
+    def _on_delete_vswitch(self, vswitch_id: UUID) -> None:
+        snapshot = self._require_snapshot()
+        if snapshot is None:
+            return
+        vs = next((item for item in snapshot.virtual_switches if item.id == vswitch_id), None)
+        if vs is None:
+            return
+        reply = QMessageBox.question(
+            self,
+            "Удалить vSwitch",
+            f"Удалить vSwitch «{vs.name}» и его Port Group?",
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        inventory_service.delete_virtual_switch(snapshot, vswitch_id)
+        self._mark_dirty()
+        self.statusBar().showMessage(f"Удалён vSwitch {vs.name}")
+
+    def _on_add_port_group(self) -> None:
+        snapshot = self._require_snapshot()
+        if snapshot is None:
+            return
+        if not snapshot.virtual_switches:
+            QMessageBox.information(
+                self, "Port Group", "Сначала создайте vSwitch на гипервизоре."
+            )
+            return
+        preferred = self._inventory_view.selected_vswitch_id()
+        dlg = PortGroupDialog(snapshot, preferred_vswitch_id=preferred, parent=self)
+        if dlg.exec() != PortGroupDialog.DialogCode.Accepted:
+            return
+        vs_id, name, vlan_id, notes = dlg.values()
+        if vs_id is None:
+            return
+        try:
+            pg = inventory_service.add_port_group(
+                snapshot, vs_id, name, vlan_id=vlan_id, notes=notes
+            )
+        except Exception as e:
+            QMessageBox.critical(self, "Port Group", str(e))
+            return
+        self._mark_dirty()
+        self.statusBar().showMessage(f"Добавлен Port Group {pg.name}")
+
+    def _on_edit_port_group(self, port_group_id: UUID) -> None:
+        snapshot = self._require_snapshot()
+        if snapshot is None:
+            return
+        pg = next((item for item in snapshot.port_groups if item.id == port_group_id), None)
+        if pg is None:
+            return
+        dlg = PortGroupDialog(snapshot, port_group=pg, parent=self)
+        if dlg.exec() != PortGroupDialog.DialogCode.Accepted:
+            return
+        _, name, vlan_id, notes = dlg.values()
+        try:
+            inventory_service.update_port_group(
+                snapshot,
+                port_group_id,
+                name=name,
+                vlan_id=vlan_id,
+                clear_vlan=vlan_id is None,
+                notes=notes,
+            )
+        except Exception as e:
+            QMessageBox.critical(self, "Port Group", str(e))
+            return
+        self._mark_dirty()
+        self.statusBar().showMessage(f"Обновлён Port Group {name}")
+
+    def _on_delete_port_group(self, port_group_id: UUID) -> None:
+        snapshot = self._require_snapshot()
+        if snapshot is None:
+            return
+        pg = next((item for item in snapshot.port_groups if item.id == port_group_id), None)
+        if pg is None:
+            return
+        reply = QMessageBox.question(
+            self,
+            "Удалить Port Group",
+            f"Удалить Port Group «{pg.name}»?",
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        inventory_service.delete_port_group(snapshot, port_group_id)
+        self._mark_dirty()
+        self.statusBar().showMessage(f"Удалён Port Group {pg.name}")
 
     def _on_edit_port_network(self, port_id: UUID) -> None:
         snapshot = self._require_snapshot()

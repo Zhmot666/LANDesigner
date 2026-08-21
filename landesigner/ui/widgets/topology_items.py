@@ -18,6 +18,7 @@ from landesigner.domain.enums import DeviceRole
 
 NODE_W = 150.0
 NODE_H = 64.0
+SNAP_GRID = 20.0
 
 ROLE_COLORS: dict[DeviceRole, QColor] = {
     DeviceRole.SWITCH: QColor("#2f7c85"),
@@ -94,6 +95,11 @@ class DeviceNodeItem(QGraphicsRectItem):
         return self.mapToScene(self.rect().center())
 
     def itemChange(self, change, value):  # noqa: N802 — Qt API
+        if change == QGraphicsItem.GraphicsItemChange.ItemPositionChange:
+            pos: QPointF = value
+            gx = round(pos.x() / SNAP_GRID) * SNAP_GRID
+            gy = round(pos.y() / SNAP_GRID) * SNAP_GRID
+            return QPointF(gx, gy)
         if change == QGraphicsItem.GraphicsItemChange.ItemPositionHasChanged and self.scene():
             scene = self.scene()
             if hasattr(scene, "notify_node_moved"):
@@ -192,8 +198,18 @@ class CableLinkItem(QGraphicsLineItem):
         self._dot_b.setPos(b)
         mid = QPointF((a.x() + b.x()) / 2, (a.y() + b.y()) / 2)
         br = self._label.boundingRect()
-        self._label.setPos(mid.x() - br.width() / 2, mid.y() - br.height() - 4)
-        self.setPen(QPen(QColor("#7a8b96"), 2.0))
+        # Сместить подпись перпендикулярно линии, чтобы не лежала на штрихе
+        dx = b.x() - a.x()
+        dy = b.y() - a.y()
+        length = (dx * dx + dy * dy) ** 0.5 or 1.0
+        nx, ny = -dy / length, dx / length
+        offset = 10.0
+        self._label.setPos(
+            mid.x() - br.width() / 2 + nx * offset,
+            mid.y() - br.height() / 2 + ny * offset,
+        )
+        selected = self.isSelected()
+        self.setPen(QPen(QColor("#2f7c85" if selected else "#7a8b96"), 2.8 if selected else 2.0))
 
     def paint(
         self,
