@@ -8,7 +8,6 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
-    QPushButton,
     QSplitter,
     QTabWidget,
     QTableWidget,
@@ -25,9 +24,10 @@ from landesigner.domain.entities import (
     ProjectSnapshot,
     Vlan,
 )
-from landesigner.domain.enums import PortStatus
+from landesigner.domain.enums import PortStatus, PortMedia, DeviceRole
 from landesigner.services import inventory as inventory_service
 from landesigner.services import search as search_service
+from landesigner.ui.icons import icon_action_button
 from landesigner.ui.labels import (
     cable_category_label,
     cable_kind_label,
@@ -62,13 +62,6 @@ _STATUS_DOT = {
 }
 
 
-def _primary_btn(text: str, parent: QWidget) -> QPushButton:
-    btn = QPushButton(text, parent)
-    btn.setObjectName("PrimaryButton")
-    btn.setProperty("role", "primary")
-    return btn
-
-
 class InventoryView(QWidget):
     add_device_requested = Signal()
     edit_device_requested = Signal(object)  # UUID
@@ -87,6 +80,7 @@ class InventoryView(QWidget):
     delete_lag_requested = Signal(object)  # UUID
     edit_port_network_requested = Signal(object)  # UUID
     edit_port_properties_requested = Signal(object)  # UUID
+    edit_vnic_host_requested = Signal(object)  # UUID
     add_port_requested = Signal()
     delete_port_requested = Signal(object)  # UUID
     device_selection_changed = Signal(object)  # UUID | None
@@ -107,7 +101,9 @@ class InventoryView(QWidget):
         self._location_hint = QLabel("", self)
         self._location_hint.setProperty("muted", True)
         self._location_hint.setObjectName("PanelSubtitle")
-        self._btn_clear_location = QPushButton("Сбросить локацию", self)
+        self._btn_clear_location = icon_action_button(
+            "clear", "Сбросить фильтр локации", self
+        )
         self._btn_clear_location.setVisible(False)
         self._btn_clear_location.clicked.connect(self.clear_location_filter)
         self._search_hint = QLabel("", self)
@@ -131,11 +127,13 @@ class InventoryView(QWidget):
         top.setChildrenCollapsible(False)
 
         devices_card = PanelCard("Устройства", top)
-        self._btn_add = _primary_btn("+ Добавить", devices_card)
-        self._btn_edit = QPushButton("Изменить", devices_card)
-        self._btn_delete = QPushButton("Удалить", devices_card)
-        self._btn_delete.setObjectName("DangerButton")
-        self._btn_delete.setProperty("role", "danger")
+        self._btn_add = icon_action_button(
+            "add", "Добавить устройство", devices_card, role="primary"
+        )
+        self._btn_edit = icon_action_button("edit", "Изменить устройство", devices_card)
+        self._btn_delete = icon_action_button(
+            "delete", "Удалить устройство", devices_card, role="danger"
+        )
         self._btn_add.clicked.connect(self.add_device_requested.emit)
         self._btn_edit.clicked.connect(self._on_edit)
         self._btn_delete.clicked.connect(self._on_delete)
@@ -154,25 +152,36 @@ class InventoryView(QWidget):
         top.addWidget(devices_card)
 
         self._ports_card = PanelCard("Порты", top, subtitle="Выберите устройство")
-        self._btn_add_port = _primary_btn("+ Порт", self._ports_card)
+        self._btn_add_port = icon_action_button(
+            "add", "Добавить порт", self._ports_card, role="primary"
+        )
         self._btn_add_port.clicked.connect(self.add_port_requested.emit)
-        self._btn_port_props = QPushButton("Свойства…", self._ports_card)
+        self._btn_port_props = icon_action_button(
+            "port", "Свойства порта", self._ports_card
+        )
         self._btn_port_props.clicked.connect(self._on_edit_port_properties)
-        self._btn_port_net = QPushButton("Сеть…", self._ports_card)
+        self._btn_port_net = icon_action_button(
+            "network", "Сеть порта (VLAN / IP)", self._ports_card
+        )
         self._btn_port_net.clicked.connect(self._on_edit_port_network)
-        self._btn_delete_port = QPushButton("Удалить", self._ports_card)
-        self._btn_delete_port.setObjectName("DangerButton")
-        self._btn_delete_port.setProperty("role", "danger")
+        self._btn_vnic_host = icon_action_button(
+            "vnic", "NIC хоста для vNIC", self._ports_card
+        )
+        self._btn_vnic_host.clicked.connect(self._on_edit_vnic_host)
+        self._btn_delete_port = icon_action_button(
+            "delete", "Удалить порт", self._ports_card, role="danger"
+        )
         self._btn_delete_port.clicked.connect(self._on_delete_port)
         self._ports_card.add_action(self._btn_add_port)
         self._ports_card.add_action(self._btn_port_props)
         self._ports_card.add_action(self._btn_port_net)
+        self._ports_card.add_action(self._btn_vnic_host)
         self._ports_card.add_action(self._btn_delete_port)
         self._ports = QTableWidget(self._ports_card)
         tune_table(self._ports)
-        self._ports.setColumnCount(9)
+        self._ports.setColumnCount(10)
         self._ports.setHorizontalHeaderLabels(
-            ["Имя", "Пара", "MAC", "Скорость", "Среда", "Статус", "Связь", "VLAN", "IP"]
+            ["Имя", "Пара", "MAC", "Скорость", "Среда", "Статус", "Связь", "NIC хоста", "VLAN", "IP"]
         )
         self._ports.itemDoubleClicked.connect(self._on_edit_port_network)
         self._ports_card.set_body_widget(self._ports)
@@ -299,12 +308,15 @@ class InventoryView(QWidget):
         layout.setContentsMargins(0, 8, 0, 0)
         layout.setSpacing(8)
         header = QHBoxLayout()
+        header.setSpacing(4)
         header.addStretch(1)
-        self._btn_add_cable = _primary_btn("+ Соединить", panel)
-        self._btn_edit_cable = QPushButton("Изменить", panel)
-        self._btn_delete_cable = QPushButton("Разорвать", panel)
-        self._btn_delete_cable.setObjectName("DangerButton")
-        self._btn_delete_cable.setProperty("role", "danger")
+        self._btn_add_cable = icon_action_button(
+            "cable", "Соединить порты кабелем", panel, role="primary"
+        )
+        self._btn_edit_cable = icon_action_button("edit", "Изменить кабель", panel)
+        self._btn_delete_cable = icon_action_button(
+            "delete", "Разорвать кабель", panel, role="danger"
+        )
         self._btn_add_cable.clicked.connect(self.add_cable_requested.emit)
         self._btn_edit_cable.clicked.connect(self._on_edit_cable)
         self._btn_delete_cable.clicked.connect(self._on_delete_cable)
@@ -328,12 +340,15 @@ class InventoryView(QWidget):
         layout.setContentsMargins(0, 8, 0, 0)
         layout.setSpacing(8)
         header = QHBoxLayout()
+        header.setSpacing(4)
         header.addStretch(1)
-        self._btn_add_vlan = _primary_btn("+ Добавить", panel)
-        self._btn_edit_vlan = QPushButton("Изменить", panel)
-        self._btn_delete_vlan = QPushButton("Удалить", panel)
-        self._btn_delete_vlan.setObjectName("DangerButton")
-        self._btn_delete_vlan.setProperty("role", "danger")
+        self._btn_add_vlan = icon_action_button(
+            "add", "Добавить VLAN", panel, role="primary"
+        )
+        self._btn_edit_vlan = icon_action_button("edit", "Изменить VLAN", panel)
+        self._btn_delete_vlan = icon_action_button(
+            "delete", "Удалить VLAN", panel, role="danger"
+        )
         self._btn_add_vlan.clicked.connect(self.add_vlan_requested.emit)
         self._btn_edit_vlan.clicked.connect(self._on_edit_vlan)
         self._btn_delete_vlan.clicked.connect(self._on_delete_vlan)
@@ -355,12 +370,15 @@ class InventoryView(QWidget):
         layout.setContentsMargins(0, 8, 0, 0)
         layout.setSpacing(8)
         header = QHBoxLayout()
+        header.setSpacing(4)
         header.addStretch(1)
-        self._btn_add_ip = _primary_btn("+ Добавить", panel)
-        self._btn_edit_ip = QPushButton("Изменить", panel)
-        self._btn_delete_ip = QPushButton("Удалить", panel)
-        self._btn_delete_ip.setObjectName("DangerButton")
-        self._btn_delete_ip.setProperty("role", "danger")
+        self._btn_add_ip = icon_action_button(
+            "add", "Добавить IP", panel, role="primary"
+        )
+        self._btn_edit_ip = icon_action_button("edit", "Изменить IP", panel)
+        self._btn_delete_ip = icon_action_button(
+            "delete", "Удалить IP", panel, role="danger"
+        )
         self._btn_add_ip.clicked.connect(self.add_ip_requested.emit)
         self._btn_edit_ip.clicked.connect(self._on_edit_ip)
         self._btn_delete_ip.clicked.connect(self._on_delete_ip)
@@ -382,12 +400,15 @@ class InventoryView(QWidget):
         layout.setContentsMargins(0, 8, 0, 0)
         layout.setSpacing(8)
         header = QHBoxLayout()
+        header.setSpacing(4)
         header.addStretch(1)
-        self._btn_add_lag = _primary_btn("+ Добавить", panel)
-        self._btn_edit_lag = QPushButton("Изменить", panel)
-        self._btn_delete_lag = QPushButton("Удалить", panel)
-        self._btn_delete_lag.setObjectName("DangerButton")
-        self._btn_delete_lag.setProperty("role", "danger")
+        self._btn_add_lag = icon_action_button(
+            "add", "Добавить LAG", panel, role="primary"
+        )
+        self._btn_edit_lag = icon_action_button("edit", "Изменить LAG", panel)
+        self._btn_delete_lag = icon_action_button(
+            "delete", "Удалить LAG", panel, role="danger"
+        )
         self._btn_add_lag.clicked.connect(self.add_lag_requested.emit)
         self._btn_edit_lag.clicked.connect(self._on_edit_lag)
         self._btn_delete_lag.clicked.connect(self._on_delete_lag)
@@ -664,8 +685,21 @@ class InventoryView(QWidget):
             device = next((d for d in snapshot.devices if d.id == device_id), None)
             name = device.hostname if device else "устройство"
             self._ports_card.set_subtitle(f"Порты: {name}")
+            port = next((p for p in ports if p.id == preferred_port_id), None) if preferred_port_id else None
+            if port is None and ports:
+                port = ports[0]
+            show_vnic = (
+                device is not None
+                and device.role == DeviceRole.VIRTUAL_MACHINE
+                and port is not None
+                and port.media == PortMedia.VIRTUAL
+            )
+            self._btn_vnic_host.setVisible(device is not None and device.role == DeviceRole.VIRTUAL_MACHINE)
+            self._btn_vnic_host.setEnabled(show_vnic)
         else:
             self._ports_card.set_subtitle("Выберите устройство")
+            self._btn_vnic_host.setVisible(False)
+            self._btn_vnic_host.setEnabled(False)
 
         with table_update(self._ports):
             self._ports.setRowCount(len(ports))
@@ -730,14 +764,20 @@ class InventoryView(QWidget):
                 self._ports.setItem(row_idx, 4, make_item(media_label(p.media)))
                 self._ports.setItem(row_idx, 5, status_item)
                 self._ports.setItem(row_idx, 6, make_item(link))
-                self._ports.setItem(row_idx, 7, make_item(vlan_txt))
+                host_nic = (
+                    inventory_service.vnic_host_port_label(snapshot, p.id)
+                    if snapshot is not None and p.media == PortMedia.VIRTUAL
+                    else "—"
+                )
+                self._ports.setItem(row_idx, 7, make_item(host_nic))
+                self._ports.setItem(row_idx, 8, make_item(vlan_txt))
                 ip_item = make_item(ip_txt, sort_key=ip_sort_key(ip_parts[0] if ip_parts else ""))
                 if lag is not None:
                     ip_item.setForeground(QBrush(_ACCENT))
                     ip_item.setToolTip(
                         f"IP на LAG «{lag.name}»" if ":" in ip_txt else f"LAG «{lag.name}»"
                     )
-                self._ports.setItem(row_idx, 8, ip_item)
+                self._ports.setItem(row_idx, 9, ip_item)
 
         select_row_by_id(self._ports, preferred_port_id)
 
@@ -820,6 +860,11 @@ class InventoryView(QWidget):
         port_id = self.selected_port_id()
         if port_id is not None:
             self.edit_port_properties_requested.emit(port_id)
+
+    def _on_edit_vnic_host(self) -> None:
+        port_id = self.selected_port_id()
+        if port_id is not None:
+            self.edit_vnic_host_requested.emit(port_id)
 
     def _on_delete_port(self) -> None:
         port_id = self.selected_port_id()

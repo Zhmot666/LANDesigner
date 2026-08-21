@@ -5,7 +5,7 @@ from enum import StrEnum
 from uuid import UUID
 
 from landesigner.domain.entities import ProjectSnapshot
-from landesigner.domain.enums import DeviceRole, PortStatus
+from landesigner.domain.enums import DeviceRole, PortMedia, PortStatus
 from landesigner.services import floor_plan as fp
 from landesigner.services import inventory as inv
 
@@ -32,6 +32,8 @@ ISSUE_CODE_LABELS: dict[str, str] = {
     "vm_invalid_host": "ВМ: некорректный хост",
     "host_on_non_vm": "Хост у не-ВМ",
     "vm_in_rack": "ВМ в шкафу",
+    "vnic_missing_host_nic": "vNIC без NIC хоста",
+    "vnic_invalid_host_nic": "vNIC: некорректный NIC хоста",
 }
 
 
@@ -350,6 +352,54 @@ def _check_virtual_machines(snapshot: ProjectSnapshot) -> list[ValidationIssue]:
                         entity_id=device.id,
                     )
                 )
+            for port in inv.ports_for_device(snapshot, device.id):
+                if port.media != PortMedia.VIRTUAL:
+                    continue
+                if port.host_port_id is None:
+                    issues.append(
+                        ValidationIssue(
+                            IssueSeverity.WARNING,
+                            "vnic_missing_host_nic",
+                            f"ВМ «{name}»: vNIC «{port.name}» без NIC хоста",
+                            entity_kind="port",
+                            entity_id=port.id,
+                        )
+                    )
+                    continue
+                host_port = next(
+                    (p for p in snapshot.ports if p.id == port.host_port_id),
+                    None,
+                )
+                if host_port is None:
+                    issues.append(
+                        ValidationIssue(
+                            IssueSeverity.ERROR,
+                            "vnic_invalid_host_nic",
+                            f"ВМ «{name}»: vNIC «{port.name}» — NIC хоста не найден",
+                            entity_kind="port",
+                            entity_id=port.id,
+                        )
+                    )
+                elif host is None or host_port.device_id != host.id:
+                    issues.append(
+                        ValidationIssue(
+                            IssueSeverity.ERROR,
+                            "vnic_invalid_host_nic",
+                            f"ВМ «{name}»: vNIC «{port.name}» привязан к чужому NIC",
+                            entity_kind="port",
+                            entity_id=port.id,
+                        )
+                    )
+                elif host_port.media == PortMedia.VIRTUAL:
+                    issues.append(
+                        ValidationIssue(
+                            IssueSeverity.ERROR,
+                            "vnic_invalid_host_nic",
+                            f"ВМ «{name}»: vNIC «{port.name}» — NIC хоста виртуальный",
+                            entity_kind="port",
+                            entity_id=port.id,
+                        )
+                    )
         elif device.host_device_id is not None:
             issues.append(
                 ValidationIssue(

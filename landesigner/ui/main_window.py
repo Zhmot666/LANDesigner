@@ -42,6 +42,7 @@ from landesigner.ui.dialogs.inventory_dialogs import (
     ProjectDialog,
     RackDialog,
     VlanDialog,
+    VnicHostDialog,
 )
 from landesigner.ui.dialogs.snapshot_dialog import SnapshotRestoreDialog
 from landesigner.ui.dialogs.sync_dialogs import (
@@ -54,6 +55,7 @@ from landesigner.ui.dialogs.sync_dialogs import (
 from landesigner.ui.views.device_types_view import DeviceTypesView
 from landesigner.ui.views.floor_plan_view import FloorPlanView
 from landesigner.ui.views.inventory_view import InventoryView
+from landesigner.ui.views.rack_view import RackView
 from landesigner.ui.views.reports_view import ReportsView
 from landesigner.ui.views.topology_view import TopologyView
 from landesigner.ui.widgets.device_card import ContextCard
@@ -75,6 +77,7 @@ class MainWindow(QMainWindow):
         self._inventory_view = InventoryView()
         self._topology_view = TopologyView()
         self._floor_plan_view = FloorPlanView()
+        self._rack_view = RackView()
         self._reports_view = ReportsView()
         self._device_card = ContextCard()
         self._syncing_selection = False
@@ -182,11 +185,12 @@ class MainWindow(QMainWindow):
         tabs.setDocumentMode(True)
         tabs.addTab(self._topology_view, "Схема")
         tabs.addTab(self._floor_plan_view, "План")
+        tabs.addTab(self._rack_view, "Стойка")
         tabs.addTab(self._device_types_view, "Каталог")
         tabs.addTab(self._inventory_view, "Инвентарь")
         tabs.addTab(self._reports_view, "Отчёты")
         self._tabs = tabs
-        tabs.setCurrentIndex(3)
+        tabs.setCurrentIndex(4)
         tabs.currentChanged.connect(self._update_edit_actions)
         tabs.currentChanged.connect(self._dock_device_card)
         content.addWidget(tabs)
@@ -225,7 +229,7 @@ class MainWindow(QMainWindow):
             return
 
         self._inventory_view.detach_device_card()
-        if current in (self._topology_view, self._floor_plan_view):
+        if current in (self._topology_view, self._floor_plan_view, self._rack_view):
             if card.parent() is not self._side_card_host:
                 self._side_card_layout.addWidget(card)
             self._side_card_host.show()
@@ -278,6 +282,7 @@ class MainWindow(QMainWindow):
         self._inventory_view.edit_port_properties_requested.connect(
             self._on_edit_port_properties
         )
+        self._inventory_view.edit_vnic_host_requested.connect(self._on_edit_vnic_host)
         self._inventory_view.add_port_requested.connect(self._on_add_port)
         self._inventory_view.delete_port_requested.connect(self._on_delete_port)
         self._topology_view.topology_changed.connect(self._on_topology_changed)
@@ -288,12 +293,15 @@ class MainWindow(QMainWindow):
         self._floor_plan_view.plan_changed.connect(self._on_floor_plan_changed)
         self._floor_plan_view.device_selected.connect(self._on_floor_plan_device_selected)
         self._floor_plan_view.measure_finished.connect(self._on_measure_finished)
+        self._rack_view.rack_changed.connect(self._on_rack_changed)
+        self._rack_view.device_selected.connect(self._on_rack_device_selected)
         self._site_tree.selection_changed.connect(self._on_tree_selection_changed)
         self._device_card.edit_project_requested.connect(self._on_edit_project)
         self._device_card.edit_building_requested.connect(self._on_edit_building_from_card)
         self._device_card.edit_device_requested.connect(self._on_edit_device)
         self._device_card.show_on_topology_requested.connect(self._on_show_on_topology)
         self._device_card.show_on_floor_plan_requested.connect(self._on_show_on_floor_plan)
+        self._device_card.show_on_rack_requested.connect(self._on_show_on_rack)
         self._update_edit_actions()
 
     def _show_device_card(self, device_id: object) -> None:
@@ -349,6 +357,19 @@ class MainWindow(QMainWindow):
         if room is not None:
             self._floor_plan_view.select_floor(room.floor_id)
             self._floor_plan_view.select_device(device_id)
+
+    def _on_show_on_rack(self, device_id: UUID) -> None:
+        snapshot = self._active_snapshot
+        if snapshot is None:
+            return
+        device = next((d for d in snapshot.devices if d.id == device_id), None)
+        if device is None or device.rack_id is None:
+            return
+        self._tabs.setCurrentIndex(2)
+        self._rack_view.select_rack(device.rack_id)
+        self._rack_view.select_device(device_id)
+        self._device_card.show_device(device_id)
+
     def _update_edit_actions(self) -> None:
         view = self._active_undo_view()
         self._action_undo.setEnabled(bool(view and view.can_undo()))
@@ -360,6 +381,8 @@ class MainWindow(QMainWindow):
             return self._topology_view
         if idx == 1:
             return self._floor_plan_view
+        if idx == 2:
+            return self._rack_view
         return None
 
     def _on_undo(self) -> None:
@@ -466,6 +489,18 @@ class MainWindow(QMainWindow):
         self._update_edit_actions()
         self._device_card.set_snapshot(self._active_snapshot)
 
+    def _on_rack_changed(self) -> None:
+        self._dirty = True
+        self._inventory_view.set_snapshot(self._active_snapshot)
+        self._site_tree.set_snapshot(self._active_snapshot)
+        title = "LanDesigner"
+        if self._active_snapshot is not None:
+            title += f" — {self._active_snapshot.meta.name} *"
+        self.setWindowTitle(title)
+        self.statusBar().showMessage("Есть несохранённые изменения")
+        self._update_edit_actions()
+        self._device_card.set_snapshot(self._active_snapshot)
+
     def _on_measure_finished(self, length_m: float) -> None:
         snapshot = self._require_snapshot()
         if snapshot is None or not snapshot.cables:
@@ -515,6 +550,7 @@ class MainWindow(QMainWindow):
         elif kind == TreeKind.RACK:
             self._device_card.show_rack(obj_id)
             self._inventory_view.set_location_filter("rack", obj_id)
+            self._rack_view.select_rack(obj_id)
         elif kind == TreeKind.ROOM:
             room = next((r for r in snapshot.rooms if r.id == obj_id), None)
             if room is None:
@@ -575,6 +611,20 @@ class MainWindow(QMainWindow):
             if isinstance(device_id, UUID):
                 self._inventory_view.select_device(device_id)
                 self._floor_plan_view.select_device(device_id)
+                self._rack_view.select_device(device_id)
+            self._show_device_card(device_id)
+        finally:
+            self._syncing_selection = False
+
+    def _on_rack_device_selected(self, device_id: object) -> None:
+        if self._syncing_selection:
+            return
+        self._syncing_selection = True
+        try:
+            if isinstance(device_id, UUID):
+                self._inventory_view.select_device(device_id)
+                self._topology_view.select_device(device_id)
+                self._floor_plan_view.select_device(device_id)
             self._show_device_card(device_id)
         finally:
             self._syncing_selection = False
@@ -599,9 +649,11 @@ class MainWindow(QMainWindow):
             if isinstance(device_id, UUID):
                 self._topology_view.select_device(device_id)
                 self._floor_plan_view.select_device(device_id)
+                self._rack_view.select_device(device_id)
             else:
                 self._topology_view.select_device(None)
                 self._floor_plan_view.select_device(None)
+                self._rack_view.select_device(None)
             self._show_device_card(device_id)
         finally:
             self._syncing_selection = False
@@ -613,6 +665,7 @@ class MainWindow(QMainWindow):
         self._topology_view.set_snapshot(self._active_snapshot)
         self._floor_plan_view.set_project_file(self._active_file)
         self._floor_plan_view.set_snapshot(self._active_snapshot)
+        self._rack_view.set_snapshot(self._active_snapshot)
         self._reports_view.set_snapshot(self._active_snapshot)
         self._device_card.set_project_file(self._active_file)
         self._device_card.set_snapshot(self._active_snapshot)
@@ -1767,6 +1820,24 @@ class MainWindow(QMainWindow):
             return
         self._mark_dirty()
         self.statusBar().showMessage(f"Порт обновлён: {name}")
+
+    def _on_edit_vnic_host(self, port_id: UUID) -> None:
+        snapshot = self._require_snapshot()
+        if snapshot is None:
+            return
+        port = next((p for p in snapshot.ports if p.id == port_id), None)
+        if port is None:
+            return
+        dlg = VnicHostDialog(snapshot, port_id, parent=self)
+        if dlg.exec() != VnicHostDialog.DialogCode.Accepted:
+            return
+        try:
+            inventory_service.set_vnic_host_port(snapshot, port_id, dlg.host_port_id())
+        except Exception as e:
+            QMessageBox.critical(self, "vNIC", str(e))
+            return
+        self._mark_dirty()
+        self.statusBar().showMessage("Привязка vNIC → NIC хоста обновлена")
 
     def _on_edit_port_network(self, port_id: UUID) -> None:
         snapshot = self._require_snapshot()

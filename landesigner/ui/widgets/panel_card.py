@@ -43,7 +43,8 @@ class PanelCard(QFrame):
         header.addLayout(titles, stretch=1)
 
         self._actions = QHBoxLayout()
-        self._actions.setSpacing(6)
+        self._actions.setSpacing(4)
+        self._actions.setContentsMargins(0, 0, 0, 0)
         header.addLayout(self._actions)
         root.addLayout(header)
 

@@ -55,6 +55,15 @@ QStatusBar {
     padding: 2px 10px;
 }
 
+QToolTip {
+    background: #23313a;
+    color: #ffffff;
+    border: none;
+    border-radius: 4px;
+    padding: 6px 8px;
+    font-size: 12px;
+}
+
 QSplitter::handle {
     background: #d8e0e6;
     width: 2px;
@@ -113,6 +122,84 @@ QPushButton#DangerButton {
 QPushButton#DangerButton:hover {
     background: #f2dfdf;
     border: 1px solid #dfb5b5;
+}
+
+QPushButton#IconActionButton {
+    background: #ffffff;
+    color: #2f7c85;
+    border: 1px solid #c7d1d8;
+    border-radius: 6px;
+    padding: 4px;
+    min-width: 28px;
+    max-width: 28px;
+    min-height: 28px;
+    max-height: 28px;
+}
+
+QPushButton#IconActionButton:hover {
+    background: #e7f2f3;
+    border: 1px solid #2f7c85;
+}
+
+QPushButton#IconActionButton:pressed {
+    background: #dbecee;
+}
+
+QPushButton#IconActionButton:disabled {
+    background: #f3f5f7;
+    border: 1px solid #dde4e8;
+}
+
+QPushButton#IconPrimaryButton {
+    background: #ffffff;
+    color: #2f7c85;
+    border: 1px solid #2f7c85;
+    border-radius: 6px;
+    padding: 4px;
+    min-width: 28px;
+    max-width: 28px;
+    min-height: 28px;
+    max-height: 28px;
+}
+
+QPushButton#IconPrimaryButton:hover {
+    background: #e7f2f3;
+    border: 1px solid #276871;
+}
+
+QPushButton#IconPrimaryButton:pressed {
+    background: #dbecee;
+}
+
+QPushButton#IconPrimaryButton:disabled {
+    background: #f3f5f7;
+    border: 1px solid #dde4e8;
+}
+
+QPushButton#IconDangerButton {
+    background: #f6eaea;
+    color: #b85c5c;
+    border: 1px solid #ebcaca;
+    border-radius: 6px;
+    padding: 4px;
+    min-width: 28px;
+    max-width: 28px;
+    min-height: 28px;
+    max-height: 28px;
+}
+
+QPushButton#IconDangerButton:hover {
+    background: #f2dfdf;
+    border: 1px solid #dfb5b5;
+}
+
+QPushButton#IconDangerButton:pressed {
+    background: #edd4d4;
+}
+
+QPushButton#IconDangerButton:disabled {
+    background: #f3f5f7;
+    border: 1px solid #dde4e8;
 }
 
 #SiteSidebar {

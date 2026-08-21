@@ -1681,3 +1681,59 @@ class PortNetworkDialog(QDialog):
             self._gateway.text().strip(),
             existing_id,
         )
+
+
+class VnicHostDialog(QDialog):
+    """Привязка vNIC виртуального сервера к физическому NIC гипервизора."""
+
+    def __init__(
+        self,
+        snapshot: ProjectSnapshot,
+        port_id: UUID,
+        parent=None,
+    ) -> None:
+        super().__init__(parent)
+        self._snapshot = snapshot
+        self._port_id = port_id
+        port = next((p for p in snapshot.ports if p.id == port_id), None)
+        if port is None:
+            raise ValueError("Порт не найден")
+        title = inventory_service.port_endpoint_label(snapshot, port_id)
+        self.setWindowTitle(f"NIC хоста — {title}")
+
+        layout = QVBoxLayout(self)
+        form = QFormLayout()
+        self._host_nic = QComboBox(self)
+        self._host_nic.addItem("— не привязан —", None)
+        device = next((d for d in snapshot.devices if d.id == port.device_id), None)
+        if device is not None:
+            for nic in inventory_service.host_nics_for_vm(snapshot, device.id):
+                label = inventory_service.port_endpoint_label(snapshot, nic.id)
+                self._host_nic.addItem(label, str(nic.id))
+        if port.host_port_id is not None:
+            idx = self._host_nic.findData(str(port.host_port_id))
+            if idx >= 0:
+                self._host_nic.setCurrentIndex(idx)
+        form.addRow("NIC гипервизора", self._host_nic)
+        hint = QLabel(
+            "Логическая привязка vNIC к физическому интерфейсу хоста (без vSwitch). "
+            "Кабель к коммутатору обычно идёт с NIC гипервизора.",
+            self,
+        )
+        hint.setWordWrap(True)
+        hint.setObjectName("HintLabel")
+        layout.addLayout(form)
+        layout.addWidget(hint)
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        _russian_buttons(buttons)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def host_port_id(self) -> UUID | None:
+        raw = self._host_nic.currentData()
+        if raw is None:
+            return None
+        return UUID(str(raw))

@@ -79,6 +79,7 @@ class TopologyScene(QGraphicsScene):
 
     def drawBackground(self, painter: QPainter, rect) -> None:  # noqa: N802
         super().drawBackground(painter, rect)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
         left = int(rect.left()) - (int(rect.left()) % int(GRID))
         top = int(rect.top()) - (int(rect.top()) % int(GRID))
         painter.setPen(QPen(QColor("#e1e8ec"), 1.0))
@@ -159,7 +160,9 @@ class TopologyView(QWidget):
         self._view.setDragMode(QGraphicsView.DragMode.RubberBandDrag)
         self._view.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
         self._view.setResizeAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
-        self._view.setViewportUpdateMode(QGraphicsView.ViewportUpdateMode.SmartViewportUpdate)
+        self._view.setViewportUpdateMode(
+            QGraphicsView.ViewportUpdateMode.BoundingRectViewportUpdate
+        )
         self._view.setFrameShape(QFrame.Shape.StyledPanel)
         self._view.viewport().installEventFilter(self)
         layout.addWidget(self._view, stretch=1)

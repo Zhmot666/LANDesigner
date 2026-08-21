@@ -9,7 +9,6 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QMenu,
-    QPushButton,
     QTreeWidget,
     QTreeWidgetItem,
     QVBoxLayout,
@@ -17,6 +16,7 @@ from PySide6.QtWidgets import (
 )
 
 from landesigner.domain.entities import ProjectSnapshot
+from landesigner.ui.icons import icon_action_button
 
 # Цвета из Designer/Палитра.css
 _TEXT_MAIN = QColor("#23313a")
@@ -78,10 +78,11 @@ class SiteTreeView(QWidget):
 
         btn_row = QHBoxLayout()
         btn_row.setSpacing(4)
-        self._btn_building = QPushButton("Здание", self)
-        self._btn_floor = QPushButton("Этаж", self)
-        self._btn_room = QPushButton("Комната", self)
-        self._btn_rack = QPushButton("Шкаф", self)
+        btn_row.setContentsMargins(10, 0, 10, 0)
+        self._btn_building = icon_action_button("building", "Добавить здание", self)
+        self._btn_floor = icon_action_button("floor", "Добавить этаж", self)
+        self._btn_room = icon_action_button("room", "Добавить комнату", self)
+        self._btn_rack = icon_action_button("rack", "Добавить шкаф", self)
         for btn, kind in (
             (self._btn_building, TreeKind.BUILDING),
             (self._btn_floor, TreeKind.FLOOR),
@@ -90,18 +91,21 @@ class SiteTreeView(QWidget):
         ):
             btn.clicked.connect(lambda _=False, k=kind: self.add_requested.emit(k))
             btn_row.addWidget(btn)
+        btn_row.addStretch(1)
         layout.addLayout(btn_row)
 
         edit_row = QHBoxLayout()
         edit_row.setSpacing(4)
-        self._btn_edit = QPushButton("Изменить…", self)
-        self._btn_delete = QPushButton("Удалить", self)
-        self._btn_delete.setObjectName("DangerButton")
-        self._btn_delete.setProperty("role", "danger")
+        edit_row.setContentsMargins(10, 0, 10, 0)
+        self._btn_edit = icon_action_button("edit", "Изменить…", self)
+        self._btn_delete = icon_action_button(
+            "delete", "Удалить", self, role="danger"
+        )
         self._btn_edit.clicked.connect(self._emit_edit)
         self._btn_delete.clicked.connect(self._emit_delete)
         edit_row.addWidget(self._btn_edit)
         edit_row.addWidget(self._btn_delete)
+        edit_row.addStretch(1)
         layout.addLayout(edit_row)
 
     def set_snapshot(self, snapshot: ProjectSnapshot | None) -> None:

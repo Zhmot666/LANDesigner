@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from PySide6.QtCore import QPointF, Qt
-from PySide6.QtGui import QBrush, QColor, QFont, QPainter, QPen
+from PySide6.QtCore import QPointF, QRectF, Qt
+from PySide6.QtGui import QBrush, QColor, QFont, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (
     QGraphicsEllipseItem,
     QGraphicsItem,
@@ -49,6 +49,16 @@ class FloorDeviceItem(QGraphicsEllipseItem):
         self._label.setPos(-br.width() / 2, MARKER_R + 2)
 
         self._drag_start: QPointF | None = None
+
+    def boundingRect(self) -> QRectF:  # noqa: N802
+        extra = 8.0
+        rect = self.rect().adjusted(-extra, -extra, extra, extra)
+        return rect.united(self.childrenBoundingRect())
+
+    def shape(self) -> QPainterPath:
+        path = QPainterPath()
+        path.addEllipse(self.rect())
+        return path
 
     def itemChange(self, change, value):  # noqa: N802
         return super().itemChange(change, value)

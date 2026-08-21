@@ -448,7 +448,10 @@ def update_port(
             raise ValueError("Скорость должна быть больше 0")
         port.speed = int(speed)
     if media is not None:
-        port.media = media if isinstance(media, PortMedia) else PortMedia(str(media))
+        new_media = media if isinstance(media, PortMedia) else PortMedia(str(media))
+        if port.media == PortMedia.VIRTUAL and new_media != PortMedia.VIRTUAL:
+            port.host_port_id = None
+        port.media = new_media
     if mac is not None:
         port.mac = normalize_mac(mac)
     return port
@@ -474,6 +477,10 @@ def add_port(
     if int(speed) <= 0:
         raise ValueError("Скорость должна быть больше 0")
     media_enum = media if isinstance(media, PortMedia) else PortMedia(str(media))
+    if device.role == DeviceRole.VIRTUAL_MACHINE:
+        media_enum = PortMedia.VIRTUAL
+        if not cleaned.lower().startswith("vnic"):
+            cleaned = f"vNIC{len(ports_for_device(snapshot, device_id))}"
     port = Port(
         device_id=device_id,
         name=cleaned,
@@ -498,6 +505,7 @@ def delete_port(snapshot: ProjectSnapshot, port_id: UUID) -> None:
     cable = cable_for_port(snapshot, port_id)
     if cable is not None:
         delete_cable(snapshot, cable.id)
+    _clear_vnic_mappings_to_port(snapshot, port_id)
     snapshot.ips = [ip for ip in snapshot.ips if ip.port_id != port_id]
     snapshot.ports = [p for p in snapshot.ports if p.id != port_id]
 
@@ -516,6 +524,84 @@ def host_for_device(snapshot: ProjectSnapshot, device: Device) -> Device | None:
     if device.host_device_id is None:
         return None
     return next((d for d in snapshot.devices if d.id == device.host_device_id), None)
+
+
+def host_nics_for_vm(snapshot: ProjectSnapshot, vm_device_id: UUID) -> list[Port]:
+    """Физические NIC гипервизора, доступные для привязки vNIC."""
+    device = next((d for d in snapshot.devices if d.id == vm_device_id), None)
+    if device is None or device.role != DeviceRole.VIRTUAL_MACHINE:
+        return []
+    host = host_for_device(snapshot, device)
+    if host is None:
+        return []
+    ports = [
+        p
+        for p in ports_for_device(snapshot, host.id)
+        if p.media != PortMedia.VIRTUAL
+    ]
+    ports.sort(key=lambda p: (p.name.casefold(), str(p.id)))
+    return ports
+
+
+def vnic_host_port(snapshot: ProjectSnapshot, port_id: UUID) -> Port | None:
+    port = next((p for p in snapshot.ports if p.id == port_id), None)
+    if port is None or port.host_port_id is None:
+        return None
+    return next((p for p in snapshot.ports if p.id == port.host_port_id), None)
+
+
+def vnic_host_port_label(snapshot: ProjectSnapshot, port_id: UUID) -> str:
+    host_port = vnic_host_port(snapshot, port_id)
+    if host_port is None:
+        return "—"
+    return port_endpoint_label(snapshot, host_port.id)
+
+
+def _clear_vnic_mappings_to_port(snapshot: ProjectSnapshot, host_port_id: UUID) -> None:
+    for port in snapshot.ports:
+        if port.host_port_id == host_port_id:
+            port.host_port_id = None
+
+
+def _clear_vm_vnic_mappings(snapshot: ProjectSnapshot, vm_device_id: UUID) -> None:
+    for port in snapshot.ports:
+        if port.device_id == vm_device_id and port.media == PortMedia.VIRTUAL:
+            port.host_port_id = None
+
+
+def set_vnic_host_port(
+    snapshot: ProjectSnapshot,
+    port_id: UUID,
+    host_port_id: UUID | None,
+) -> Port:
+    port = next((p for p in snapshot.ports if p.id == port_id), None)
+    if port is None:
+        raise ValueError("Порт не найден")
+    device = next((d for d in snapshot.devices if d.id == port.device_id), None)
+    if device is None:
+        raise ValueError("Устройство не найдено")
+    if device.role != DeviceRole.VIRTUAL_MACHINE:
+        raise ValueError("Привязка NIC хоста доступна только для vNIC виртуального сервера")
+    if port.media != PortMedia.VIRTUAL:
+        raise ValueError("Привязка NIC хоста доступна только для vNIC (среда vNIC)")
+
+    if host_port_id is None:
+        port.host_port_id = None
+        return port
+
+    host_port = next((p for p in snapshot.ports if p.id == host_port_id), None)
+    if host_port is None:
+        raise ValueError("NIC хоста не найден")
+    host_device = host_for_device(snapshot, device)
+    if host_device is None:
+        raise ValueError("У виртуального сервера не указан гипервизор")
+    if host_port.device_id != host_device.id:
+        raise ValueError("NIC должен принадлежать гипервизору этой ВМ")
+    if host_port.media == PortMedia.VIRTUAL:
+        raise ValueError("NIC хоста не может быть виртуальным портом")
+
+    port.host_port_id = host_port.id
+    return port
 
 
 def _require_hypervisor_host(
@@ -553,6 +639,7 @@ def _apply_vm_host(
     device.rack_id = None
     device.rack_u = None
     device.rack_u_height = 1
+    _clear_vm_vnic_mappings(snapshot, device.id)
 
 
 def add_device(
@@ -595,6 +682,10 @@ def add_device(
     snapshot.ports.extend(_ports_from_template(device.id, device_type.port_template))
 
     if is_vm:
+        vm_ports = [p for p in snapshot.ports if p.device_id == device.id]
+        for index, port in enumerate(vm_ports):
+            port.media = PortMedia.VIRTUAL
+            port.name = f"vNIC{index}"
         assert host_device_id is not None
         _apply_vm_host(snapshot, device, host_device_id)
         return device

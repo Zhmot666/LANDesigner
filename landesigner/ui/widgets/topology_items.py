@@ -3,7 +3,7 @@ from __future__ import annotations
 from uuid import UUID
 
 from PySide6.QtCore import QPointF, QRectF, Qt
-from PySide6.QtGui import QBrush, QColor, QFont, QPainter, QPen
+from PySide6.QtGui import QBrush, QColor, QFont, QPainter, QPainterPath, QPainterPathStroker, QPen
 from PySide6.QtWidgets import (
     QGraphicsEllipseItem,
     QGraphicsItem,
@@ -51,6 +51,7 @@ class DeviceNodeItem(QGraphicsRectItem):
         self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable, True)
         self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, True)
         self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemSendsGeometryChanges, True)
+        self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemClipsChildrenToShape, True)
         self.setAcceptHoverEvents(True)
         self.setZValue(2)
 
@@ -64,11 +65,13 @@ class DeviceNodeItem(QGraphicsRectItem):
         font = QFont("Segoe UI", 10)
         font.setBold(True)
         self._title.setFont(font)
+        self._title.setTextWidth(NODE_W - 22)
         self._title.setPos(14, 10)
 
         self._subtitle = QGraphicsTextItem(role_label, self)
         self._subtitle.setDefaultTextColor(QColor("#667784"))
         self._subtitle.setFont(QFont("Segoe UI", 8))
+        self._subtitle.setTextWidth(NODE_W - 22)
         self._subtitle.setPos(14, 34)
 
         self._drag_start: QPointF | None = None
@@ -78,8 +81,17 @@ class DeviceNodeItem(QGraphicsRectItem):
         self._title.setPlainText(self.hostname)
         self._subtitle.setPlainText(role_label)
 
+    def boundingRect(self) -> QRectF:  # noqa: N802
+        # Обводка выбора и сглаживание рисуются чуть шире rect().
+        return self.rect().adjusted(-8, -8, 8, 8)
+
+    def shape(self) -> QPainterPath:
+        path = QPainterPath()
+        path.addRoundedRect(self.rect(), 8, 8)
+        return path
+
     def center_scene_pos(self) -> QPointF:
-        return self.sceneBoundingRect().center()
+        return self.mapToScene(self.rect().center())
 
     def itemChange(self, change, value):  # noqa: N802 — Qt API
         if change == QGraphicsItem.GraphicsItemChange.ItemPositionHasChanged and self.scene():
@@ -157,7 +169,22 @@ class CableLinkItem(QGraphicsLineItem):
         self._label.setPlainText(label)
         self.update_geometry()
 
+    def boundingRect(self) -> QRectF:  # noqa: N802
+        extra = 10.0
+        rect = super().boundingRect().adjusted(-extra, -extra, extra, extra)
+        return rect.united(self.childrenBoundingRect())
+
+    def shape(self) -> QPainterPath:  # noqa: N802
+        path = QPainterPath()
+        path.moveTo(self.line().p1())
+        path.lineTo(self.line().p2())
+        stroker = QPainterPathStroker()
+        stroker.setWidth(12.0)
+        stroker.setCapStyle(Qt.PenCapStyle.RoundCap)
+        return stroker.createStroke(path)
+
     def update_geometry(self) -> None:
+        self.prepareGeometryChange()
         a = self.node_a.center_scene_pos()
         b = self.node_b.center_scene_pos()
         self.setLine(a.x(), a.y(), b.x(), b.y())
@@ -166,8 +193,7 @@ class CableLinkItem(QGraphicsLineItem):
         mid = QPointF((a.x() + b.x()) / 2, (a.y() + b.y()) / 2)
         br = self._label.boundingRect()
         self._label.setPos(mid.x() - br.width() / 2, mid.y() - br.height() - 4)
-        # Толще hit-area для удобного выбора тонкой линии.
-        self.setPen(QPen(QColor("#7a8b96"), 8.0))
+        self.setPen(QPen(QColor("#7a8b96"), 2.0))
 
     def paint(
         self,

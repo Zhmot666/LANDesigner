@@ -115,6 +115,7 @@ class Port:
     mac: str = ""  # AA:BB:CC:DD:EE:FF, опционально
     side: PortSide = PortSide.NONE
     position: int = 0  # номер пары на патч-панели (1…N); 0 — обычный порт
+    host_port_id: Optional[UUID] = None  # vNIC → физический NIC гипервизора
     # Access VLAN (ACCESS) или native/untagged (TRUNK).
     access_vlan_id: Optional[UUID] = None
     tagged_vlan_ids: list[UUID] = field(default_factory=list)

@@ -8,15 +8,15 @@ from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QFormLayout,
     QLabel,
-    QPushButton,
     QStackedWidget,
     QVBoxLayout,
     QWidget,
 )
 
 from landesigner.domain.entities import Building, Device, ProjectSnapshot, Rack
-from landesigner.domain.enums import PortStatus
+from landesigner.domain.enums import PortStatus, PortMedia, DeviceRole
 from landesigner.services import inventory as inv
+from landesigner.ui.icons import icon_action_button
 from landesigner.ui.labels import lag_mode_label, role_label
 from landesigner.ui.widgets.panel_card import PanelCard
 
@@ -37,6 +37,7 @@ class ContextCard(QWidget):
     edit_device_requested = Signal(object)  # UUID
     show_on_topology_requested = Signal(object)  # UUID
     show_on_floor_plan_requested = Signal(object)  # UUID
+    show_on_rack_requested = Signal(object)  # UUID
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -54,15 +55,18 @@ class ContextCard(QWidget):
         root.setSpacing(0)
 
         self._card = PanelCard("Свойства", self, subtitle="Нет открытого проекта")
-        self._btn_edit = QPushButton("Изменить…", self._card)
-        self._btn_topo = QPushButton("На схеме", self._card)
-        self._btn_plan = QPushButton("На плане", self._card)
+        self._btn_edit = icon_action_button("edit", "Изменить…", self._card)
+        self._btn_topo = icon_action_button("topology", "Показать на схеме", self._card)
+        self._btn_plan = icon_action_button("plan", "Показать на плане", self._card)
+        self._btn_rack = icon_action_button("rack", "Показать в стойке", self._card)
         self._btn_edit.clicked.connect(self._emit_edit)
         self._btn_topo.clicked.connect(self._emit_topo)
         self._btn_plan.clicked.connect(self._emit_plan)
+        self._btn_rack.clicked.connect(self._emit_rack)
         self._card.add_action(self._btn_edit)
         self._card.add_action(self._btn_topo)
         self._card.add_action(self._btn_plan)
+        self._card.add_action(self._btn_rack)
 
         self._stack = QStackedWidget(self._card)
         self._page_empty = self._build_empty_page()
@@ -227,6 +231,7 @@ class ContextCard(QWidget):
         self._dev_tag = QLabel("—", page)
         self._dev_host = QLabel("—", page)
         self._dev_vms = QLabel("—", page)
+        self._dev_vnics = QLabel("—", page)
         self._dev_location = QLabel("—", page)
         self._dev_ports = QLabel("—", page)
         self._dev_lags = QLabel("—", page)
@@ -237,6 +242,7 @@ class ContextCard(QWidget):
             self._dev_tag,
             self._dev_host,
             self._dev_vms,
+            self._dev_vnics,
             self._dev_location,
             self._dev_ports,
             self._dev_lags,
@@ -249,6 +255,7 @@ class ContextCard(QWidget):
         form.addRow("Инв. №", self._dev_tag)
         form.addRow("Гипервизор", self._dev_host)
         form.addRow("ВМ", self._dev_vms)
+        form.addRow("vNIC → NIC", self._dev_vnics)
         form.addRow("Расположение", self._dev_location)
         form.addRow("Порты", self._dev_ports)
         form.addRow("LAG", self._dev_lags)
@@ -466,6 +473,16 @@ class ContextCard(QWidget):
             self._dev_vms.setText("\n".join(vm.hostname or str(vm.id) for vm in vms))
         else:
             self._dev_vms.setText("—")
+        if device.role == DeviceRole.VIRTUAL_MACHINE:
+            vnic_lines: list[str] = []
+            for port in inv.ports_for_device(snap, device.id):
+                if port.media != PortMedia.VIRTUAL:
+                    continue
+                nic = inv.vnic_host_port_label(snap, port.id)
+                vnic_lines.append(f"{port.name} → {nic}")
+            self._dev_vnics.setText("\n".join(vnic_lines) if vnic_lines else "—")
+        else:
+            self._dev_vnics.setText("—")
         self._dev_location.setText(inv.device_location_label(snap, device.id))
         self._dev_ports.setText(summary)
         lags = inv.lags_for_device(snap, device.id)
@@ -479,12 +496,22 @@ class ContextCard(QWidget):
             )
         else:
             self._dev_lags.setText("—")
+        self._update_rack_nav()
 
     def _set_nav_visible(self, visible: bool) -> None:
         self._btn_topo.setVisible(visible)
         self._btn_plan.setVisible(visible)
+        self._btn_rack.setVisible(visible)
         self._btn_topo.setEnabled(visible)
         self._btn_plan.setEnabled(visible)
+        self._btn_rack.setEnabled(visible)
+
+    def _update_rack_nav(self) -> None:
+        if self._kind != ContextKind.DEVICE or self._device_id is None or self._snapshot is None:
+            self._btn_rack.setEnabled(False)
+            return
+        device = next((d for d in self._snapshot.devices if d.id == self._device_id), None)
+        self._btn_rack.setEnabled(device is not None and device.rack_id is not None)
 
     def _emit_edit(self) -> None:
         if self._kind == ContextKind.PROJECT:
@@ -501,6 +528,10 @@ class ContextCard(QWidget):
     def _emit_plan(self) -> None:
         if self._device_id is not None:
             self.show_on_floor_plan_requested.emit(self._device_id)
+
+    def _emit_rack(self) -> None:
+        if self._device_id is not None:
+            self.show_on_rack_requested.emit(self._device_id)
 
 
 # Обратная совместимость со старым именем

@@ -349,6 +349,7 @@ class LocalSqliteRepository(ProjectRepository):
         self._ensure_column(con, "device", "rack_u", "INTEGER")
         self._ensure_column(con, "device", "rack_u_height", "INTEGER NOT NULL DEFAULT 1")
         self._ensure_column(con, "device", "host_device_id", "TEXT")
+        self._ensure_column(con, "port", "host_port_id", "TEXT")
         con.commit()
 
     def _ensure_column(
@@ -617,7 +618,7 @@ class LocalSqliteRepository(ProjectRepository):
                 ports_rows = con.execute(
                     f"""
                     SELECT id, device_id, name, speed, media, status, access_vlan_id, mode,
-                           mac, side, position
+                           mac, side, position, host_port_id
                     FROM port
                     WHERE device_id IN ({placeholders_devices})
                     """,
@@ -640,6 +641,9 @@ class LocalSqliteRepository(ProjectRepository):
                             else PortSide.NONE
                         ),
                         position=int(r[10]) if len(r) > 10 and r[10] is not None else 0,
+                        host_port_id=(
+                            UUID(r[11]) if len(r) > 11 and r[11] is not None else None
+                        ),
                     )
                     for r in ports_rows
                 ]
@@ -1040,9 +1044,9 @@ class LocalSqliteRepository(ProjectRepository):
                     """
                     INSERT INTO port(
                         id, device_id, name, speed, media, status, access_vlan_id, mode,
-                        mac, side, position
+                        mac, side, position, host_port_id
                     )
-                    VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         _uuid_str(p.id),
@@ -1056,6 +1060,7 @@ class LocalSqliteRepository(ProjectRepository):
                         p.mac,
                         _enum_value(p.side),
                         int(p.position or 0),
+                        _uuid_str(p.host_port_id) if p.host_port_id is not None else None,
                     ),
                 )
                 for vlan_uuid in p.tagged_vlan_ids:

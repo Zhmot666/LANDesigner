@@ -8,7 +8,6 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
-    QPushButton,
     QTableWidget,
     QVBoxLayout,
     QWidget,
@@ -16,16 +15,10 @@ from PySide6.QtWidgets import (
 
 from landesigner.domain.entities import DeviceType, ProjectSnapshot
 from landesigner.services import search as search_service
+from landesigner.ui.icons import icon_action_button
 from landesigner.ui.labels import role_label
 from landesigner.ui.table_utils import make_item, select_row_by_id, table_update, tune_table
 from landesigner.ui.widgets.panel_card import PanelCard
-
-
-def _primary_btn(text: str, parent: QWidget) -> QPushButton:
-    btn = QPushButton(text, parent)
-    btn.setObjectName("PrimaryButton")
-    btn.setProperty("role", "primary")
-    return btn
 
 
 class DeviceTypesView(QWidget):
@@ -62,14 +55,16 @@ class DeviceTypesView(QWidget):
         QShortcut(QKeySequence(Qt.Key.Key_Escape), self._search, activated=self._clear_search)
 
         card = PanelCard("Типы устройств", self)
-        self._btn_add = _primary_btn("+ Добавить", card)
-        self._btn_catalog = QPushButton("Каталог…", card)
-        self._btn_edit = QPushButton("Изменить", card)
-        self._btn_delete = QPushButton("Удалить", card)
-        self._btn_delete.setObjectName("DangerButton")
-        self._btn_delete.setProperty("role", "danger")
-        self._btn_export = QPushButton("Экспорт пресета…", card)
-        self._btn_import = QPushButton("Импорт пресета…", card)
+        self._btn_add = icon_action_button(
+            "add", "Добавить тип", card, role="primary"
+        )
+        self._btn_catalog = icon_action_button("catalog", "Добавить из каталога…", card)
+        self._btn_edit = icon_action_button("edit", "Изменить тип", card)
+        self._btn_delete = icon_action_button(
+            "delete", "Удалить тип", card, role="danger"
+        )
+        self._btn_export = icon_action_button("export", "Экспорт пресета…", card)
+        self._btn_import = icon_action_button("import", "Импорт пресета…", card)
 
         self._btn_add.clicked.connect(self.add_requested.emit)
         self._btn_catalog.clicked.connect(self.add_from_catalog_requested.emit)
@@ -131,7 +126,7 @@ class DeviceTypesView(QWidget):
         raw = item.data(Qt.ItemDataRole.UserRole)
         return UUID(raw) if raw else None
 
-    def _refresh_table(self, *, preserve_selection: bool) -> None:
+    def _refresh_table(self, *, preserve_selection: bool = False) -> None:
         selected = self.selected_type_id() if preserve_selection else None
         if self._snapshot is None:
             with table_update(self._table):

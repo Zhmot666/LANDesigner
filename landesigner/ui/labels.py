@@ -33,7 +33,7 @@ PORT_MEDIA_RU: dict[PortMedia, str] = {
     PortMedia.COPPER: "Медь",
     PortMedia.FIBER: "Оптика",
     PortMedia.DAC: "DAC",
-    PortMedia.VIRTUAL: "Виртуальный",
+    PortMedia.VIRTUAL: "vNIC",
 }
 
 PORT_STATUS_RU: dict[PortStatus, str] = {

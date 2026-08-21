@@ -157,6 +157,9 @@ class FloorPlanView(QWidget):
         self._view.setDragMode(QGraphicsView.DragMode.RubberBandDrag)
         self._view.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
         self._view.setResizeAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
+        self._view.setViewportUpdateMode(
+            QGraphicsView.ViewportUpdateMode.BoundingRectViewportUpdate
+        )
         self._view.setFrameShape(QFrame.Shape.StyledPanel)
         self._view.viewport().installEventFilter(self)
         root.addWidget(self._view, stretch=1)

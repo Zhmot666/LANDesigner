@@ -9,7 +9,6 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QMessageBox,
-    QPushButton,
     QSplitter,
     QTableWidget,
     QVBoxLayout,
@@ -21,6 +20,7 @@ from landesigner.services import reports as reports_svc
 from landesigner.services import validation as validation_svc
 from landesigner.services.reports import ReportKind
 from landesigner.services.validation import IssueSeverity
+from landesigner.ui.icons import icon_action_button
 from landesigner.ui.table_utils import make_item, table_update, tune_table
 from landesigner.ui.widgets.panel_card import PanelCard
 
@@ -54,10 +54,12 @@ class ReportsView(QWidget):
         layout.addWidget(splitter, stretch=1)
 
         # --- Валидация ---
-        issues_card = PanelCard("Проверки", splitter, subtitle="Нажмите «Проверить»")
-        self._btn_validate = QPushButton("Проверить", issues_card)
-        self._btn_validate.setObjectName("PrimaryButton")
-        self._btn_validate.setProperty("role", "primary")
+        issues_card = PanelCard(
+            "Проверки", splitter, subtitle="Кнопка «галочка» в шапке — запуск проверки"
+        )
+        self._btn_validate = icon_action_button(
+            "check", "Проверить проект", issues_card, role="primary"
+        )
         self._btn_validate.clicked.connect(self.run_validation)
         issues_card.add_action(self._btn_validate)
         self._issues_table = QTableWidget(issues_card)
@@ -72,11 +74,11 @@ class ReportsView(QWidget):
         self._report_kind = QComboBox(reports_card)
         for kind in ReportKind:
             self._report_kind.addItem(reports_svc.REPORT_TITLES[kind], kind.value)
-        self._btn_build = QPushButton("Сформировать", reports_card)
-        self._btn_build.setObjectName("PrimaryButton")
-        self._btn_build.setProperty("role", "primary")
-        self._btn_csv = QPushButton("CSV…", reports_card)
-        self._btn_print = QPushButton("Печать…", reports_card)
+        self._btn_build = icon_action_button(
+            "report", "Сформировать отчёт", reports_card, role="primary"
+        )
+        self._btn_csv = icon_action_button("csv", "Экспорт отчёта в CSV…", reports_card)
+        self._btn_print = icon_action_button("print", "Печать отчёта…", reports_card)
         self._btn_build.clicked.connect(self.build_report)
         self._btn_csv.clicked.connect(self.export_csv)
         self._btn_print.clicked.connect(self.print_report)

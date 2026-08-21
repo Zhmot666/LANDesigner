@@ -256,6 +256,7 @@ def _headers_for(section: str) -> list[str]:
             "mac",
             "side",
             "position",
+            "host_port_id",
         ],
         "cables": [
             "id",
@@ -402,6 +403,7 @@ def _section_rows(snapshot: ProjectSnapshot, name: str) -> list[dict[str, str]]:
                 "mac": p.mac,
                 "side": p.side.value,
                 "position": str(p.position or 0),
+                "host_port_id": _opt_uuid(p.host_port_id),
             }
             for p in snapshot.ports
         ]
@@ -618,6 +620,7 @@ def _load_port(row: dict[str, str]) -> Port:
         mac=_get(row, "mac"),
         side=_enum(PortSide, _get(row, "side"), PortSide.NONE),
         position=_int(row, "position", 0),
+        host_port_id=_opt_parse_uuid(_get(row, "host_port_id")),
     )
 
 
