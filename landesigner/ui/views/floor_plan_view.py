@@ -32,23 +32,29 @@ from PySide6.QtWidgets import (
 )
 
 from landesigner.domain.entities import ProjectSnapshot
+from landesigner.domain.enums import DeviceRole
 from landesigner.services import floor_plan as fp
 from landesigner.ui.commands.floor_plan_commands import (
     AddFloorRouteCommand,
     MoveFloorAssetCommand,
+    MoveFloorAssetsCommand,
     RemoveFloorAssetCommand,
     RemoveFloorRouteCommand,
 )
+from landesigner.ui.labels import role_label
 from landesigner.ui.widgets.floor_plan_items import FloorDeviceItem, FloorRouteItem
+from landesigner.ui.widgets.topology_items import ROLE_COLORS
 
 
 class FloorPlanScene(QGraphicsScene):
     asset_move_committed = Signal(object, float, float, float, float)
+    assets_moved = Signal(object)  # dict[UUID, (ox, oy, nx, ny)]
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setSceneRect(-500, -500, 5000, 5000)
         self.setBackgroundBrush(QBrush(QColor("#eef3f5")))
+        self._group_drag_primary: FloorDeviceItem | None = None
 
     def commit_asset_move(
         self,
@@ -63,6 +69,18 @@ class FloorPlanScene(QGraphicsScene):
             new_pos.x(),
             new_pos.y(),
         )
+
+    def commit_assets_moved(
+        self,
+        changes: dict[UUID, tuple[float, float, float, float]],
+    ) -> None:
+        if not changes:
+            return
+        if len(changes) == 1:
+            asset_id, (ox, oy, nx, ny) = next(iter(changes.items()))
+            self.asset_move_committed.emit(asset_id, ox, oy, nx, ny)
+            return
+        self.assets_moved.emit(changes)
 
 
 class FloorPlanView(QWidget):
@@ -143,7 +161,7 @@ class FloorPlanView(QWidget):
         self._scale.valueChanged.connect(self._on_scale_changed)
         scale_row.addWidget(self._scale)
         self._hint = QLabel(
-            "Выберите этаж · подложка · маркеры · Трасса — клики, Enter — сохранить",
+            "Этаж · подложка · рамка — группа · Трасса — клики, Enter — сохранить",
             self,
         )
         self._hint.setObjectName("PanelSubtitle")
@@ -168,7 +186,21 @@ class FloorPlanView(QWidget):
         self._view.viewport().installEventFilter(self)
         root.addWidget(self._view, stretch=1)
 
+        legend = QHBoxLayout()
+        legend.setSpacing(12)
+        legend_title = QLabel("Роли:", self)
+        legend_title.setProperty("muted", True)
+        legend.addWidget(legend_title)
+        for role in DeviceRole:
+            chip = QLabel(f"● {role_label(role)}", self)
+            color = ROLE_COLORS.get(role, ROLE_COLORS[DeviceRole.OTHER])
+            chip.setStyleSheet(f"color: {color.name()}; font-size: 11px;")
+            legend.addWidget(chip)
+        legend.addStretch(1)
+        root.addLayout(legend)
+
         self._scene.asset_move_committed.connect(self._on_asset_move_committed)
+        self._scene.assets_moved.connect(self._on_assets_moved)
         self._scene.selectionChanged.connect(self._on_selection_changed)
 
         QShortcut(QKeySequence.StandardKey.Undo, self, activated=self._undo.undo)
@@ -397,7 +429,7 @@ class FloorPlanView(QWidget):
             self._view.setDragMode(QGraphicsView.DragMode.RubberBandDrag)
             self._view.unsetCursor()
             self._hint.setText(
-                "Выберите этаж · подложка · маркеры · Трасса — клики, Enter — сохранить"
+                "Этаж · подложка · рамка — группа · Трасса — клики, Enter — сохранить"
             )
 
     def _cancel_measure(self) -> None:
@@ -587,6 +619,20 @@ class FloorPlanView(QWidget):
             old_y,
             new_x,
             new_y,
+            on_changed=self._apply_positions,
+        )
+        self._undo.push(cmd)
+        self.plan_changed.emit()
+
+    def _on_assets_moved(
+        self,
+        changes: dict[UUID, tuple[float, float, float, float]],
+    ) -> None:
+        if self._snapshot is None or not changes:
+            return
+        cmd = MoveFloorAssetsCommand(
+            self._snapshot,
+            changes,
             on_changed=self._apply_positions,
         )
         self._undo.push(cmd)

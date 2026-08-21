@@ -37,6 +37,36 @@ class MoveFloorAssetCommand(QUndoCommand):
             self._on_changed()
 
 
+class MoveFloorAssetsCommand(QUndoCommand):
+    """Групповое перемещение маркеров: asset_id → (ox, oy, nx, ny)."""
+
+    def __init__(
+        self,
+        snapshot: ProjectSnapshot,
+        changes: dict[UUID, tuple[float, float, float, float]],
+        on_changed=None,
+    ) -> None:
+        super().__init__("Перемещение маркеров")
+        self._snapshot = snapshot
+        self._changes = dict(changes)
+        self._on_changed = on_changed
+
+    def isObsolete(self) -> bool:  # noqa: N802
+        return not self._changes
+
+    def redo(self) -> None:
+        for asset_id, (_ox, _oy, nx, ny) in self._changes.items():
+            fp.move_asset(self._snapshot, asset_id, nx, ny)
+        if self._on_changed:
+            self._on_changed()
+
+    def undo(self) -> None:
+        for asset_id, (ox, oy, _nx, _ny) in self._changes.items():
+            fp.move_asset(self._snapshot, asset_id, ox, oy)
+        if self._on_changed:
+            self._on_changed()
+
+
 class RemoveFloorAssetCommand(QUndoCommand):
     def __init__(
         self,

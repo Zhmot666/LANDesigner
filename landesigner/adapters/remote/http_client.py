@@ -104,6 +104,27 @@ class RemoteHttpClient:
             raise
         return _info_from_json(payload)
 
+    def check_connection(self) -> tuple[bool, str]:
+        """Проверка URL и API-ключа. Возвращает (ok, сообщение)."""
+        try:
+            data, _ = self._request_bytes("GET", "/health")
+            status = "ok"
+            try:
+                payload = json.loads(data.decode("utf-8")) if data else {}
+                status = str(payload.get("status", "ok"))
+            except Exception:
+                pass
+            # Если ключ задан — дополнительно проверяем доступ к /projects.
+            if self._token:
+                projects = self.list_projects()
+                return True, f"Сервер доступен ({status}), проектов: {len(projects)}"
+            return True, f"Сервер доступен ({status})"
+        except RemoteAuthError as exc:
+            detail = str(exc).strip() or "Неверный API-ключ"
+            return False, f"Ошибка авторизации: {detail}"
+        except Exception as exc:
+            return False, f"Нет связи: {exc}"
+
     def _headers(self, extra: dict[str, str] | None = None) -> dict[str, str]:
         headers = {"Accept": "application/json"}
         if self._token:

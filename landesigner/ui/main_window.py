@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (
 from landesigner.adapters.local_sqlite.repository import LocalSqliteRepository
 from landesigner.adapters.remote import RemoteHttpClient
 from landesigner.domain.entities import ProjectMeta, ProjectSnapshot, Site, utcnow
-from landesigner.ports.remote import RemoteConflictError
+from landesigner.ports.remote import RemoteAuthError, RemoteConflictError
 from landesigner.services import catalog as catalog_svc
 from landesigner.services import device_type_preset as type_preset_svc
 from landesigner.services import import_export as csv_io
@@ -726,6 +726,15 @@ class MainWindow(QMainWindow):
         url, token = load_sync_settings()
         return RemoteHttpClient(url, api_token=token)
 
+    def _sync_auth_failed(self, title: str, error: RemoteAuthError) -> None:
+        detail = str(error).strip() or "Неверный API-ключ"
+        QMessageBox.critical(
+            self,
+            title,
+            f"{detail}\n\nПроверьте URL и API-ключ в «Синхронизация → Настройки…» "
+            "(кнопка «Проверить соединение»).",
+        )
+
     def _require_snapshot(self) -> ProjectSnapshot | None:
         if self._active_snapshot is None:
             QMessageBox.warning(self, "Проект", "Сначала создайте или откройте проект.")
@@ -842,6 +851,9 @@ class MainWindow(QMainWindow):
         try:
             client = self._remote_client()
             projects = sync_svc.list_remote_projects(client)
+        except RemoteAuthError as e:
+            self._sync_auth_failed("Синхронизация", e)
+            return
         except Exception as e:
             QMessageBox.critical(self, "Синхронизация", str(e))
             return
@@ -902,6 +914,8 @@ class MainWindow(QMainWindow):
             self._service.save_project(file_path=self._active_file, snapshot=snapshot)
             self._update_sync_status()
             QMessageBox.information(self, "Синхронизация", "Проект опубликован на сервере.")
+        except RemoteAuthError as e:
+            self._sync_auth_failed("Публикация", e)
         except Exception as e:
             QMessageBox.critical(self, "Публикация", str(e))
 
@@ -927,6 +941,8 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Push", "Изменения отправлены на сервер.")
         except RemoteConflictError as e:
             self._resolve_push_conflict(e)
+        except RemoteAuthError as e:
+            self._sync_auth_failed("Push", e)
         except Exception as e:
             QMessageBox.critical(self, "Push", str(e))
 
@@ -1012,6 +1028,8 @@ class MainWindow(QMainWindow):
                 "Pull",
                 f"Загружена серверная версия (rev {blob.info.revision}).",
             )
+        except RemoteAuthError as e:
+            self._sync_auth_failed("Pull", e)
         except Exception as e:
             QMessageBox.critical(self, "Pull", str(e))
 

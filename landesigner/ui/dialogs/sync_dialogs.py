@@ -45,7 +45,7 @@ class SyncSettingsDialog(QDialog):
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self.setWindowTitle("Сервер синхронизации")
-        self.resize(460, 160)
+        self.resize(480, 220)
         url, token = load_sync_settings()
         layout = QVBoxLayout(self)
         form = QFormLayout()
@@ -63,6 +63,16 @@ class SyncSettingsDialog(QDialog):
                 self,
             )
         )
+        self._status = QLabel("", self)
+        self._status.setWordWrap(True)
+        self._status.setProperty("muted", True)
+        layout.addWidget(self._status)
+        test_row = QHBoxLayout()
+        self._btn_test = QPushButton("Проверить соединение", self)
+        self._btn_test.clicked.connect(self._on_test)
+        test_row.addWidget(self._btn_test)
+        test_row.addStretch(1)
+        layout.addLayout(test_row)
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
         )
@@ -73,6 +83,23 @@ class SyncSettingsDialog(QDialog):
 
     def values(self) -> tuple[str, str]:
         return self._url.text().strip().rstrip("/"), self._token.text().strip()
+
+    def _on_test(self) -> None:
+        from landesigner.adapters.remote import RemoteHttpClient
+
+        url, token = self.values()
+        if not url:
+            self._status.setText("Укажите URL сервера.")
+            return
+        self._btn_test.setEnabled(False)
+        self._status.setText("Проверка…")
+        try:
+            ok, message = RemoteHttpClient(url, api_token=token, timeout_s=8.0).check_connection()
+        finally:
+            self._btn_test.setEnabled(True)
+        self._status.setText(message)
+        if not ok:
+            QMessageBox.warning(self, "Синхронизация", message)
 
 
 class RemoteProjectsDialog(QDialog):

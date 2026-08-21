@@ -219,6 +219,80 @@ def test_conflict_diff_compares_devices(tmp_path: Path):
     assert "sw-both" in text and "sw-renamed" in text
 
 
+def test_check_connection_health_and_auth(tmp_path: Path):
+    fastapi = pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    from landesigner.adapters.remote.http_client import RemoteHttpClient
+    from server.app import create_app
+
+    store = ProjectStore(tmp_path / "auth_check.db")
+    app = create_app(store, api_key="secret")
+    client_http = TestClient(app)
+
+    class _Patched(RemoteHttpClient):
+        def _request_bytes(self, method, path, **kwargs):
+            # TestClient path: use ASGI app instead of real HTTP.
+            url = path
+            headers = self._headers(kwargs.get("headers"))
+            if method == "GET":
+                resp = client_http.get(url, headers=headers)
+            else:
+                resp = client_http.request(method, url, headers=headers, content=kwargs.get("body"))
+            if resp.status_code in (401, 403):
+                from landesigner.ports.remote import RemoteAuthError
+
+                raise RemoteAuthError(resp.text or "auth")
+            if resp.status_code >= 400:
+                raise RuntimeError(f"HTTP {resp.status_code}: {resp.text}")
+            return resp.content, {k: v for k, v in resp.headers.items()}
+
+    ok_client = _Patched("http://test", api_token="secret", timeout_s=5)
+    ok, msg = ok_client.check_connection()
+    assert ok
+    assert "доступен" in msg
+
+    bad = _Patched("http://test", api_token="wrong", timeout_s=5)
+    ok2, msg2 = bad.check_connection()
+    assert not ok2
+    assert "автор" in msg2.casefold() or "ключ" in msg2.casefold() or "auth" in msg2.casefold()
+
+
+def test_move_floor_assets_command(tmp_path: Path):
+    from PySide6.QtWidgets import QApplication
+
+    from landesigner.domain.enums import DeviceRole
+    from landesigner.services import floor_plan as fp
+    from landesigner.services import inventory as inv
+    from landesigner.ui.commands.floor_plan_commands import MoveFloorAssetsCommand
+
+    _ = QApplication.instance() or QApplication([])
+    meta = ProjectMeta(name="G")
+    site = Site(project_id=meta.id, name="S")
+    snap = ProjectSnapshot(meta=meta, sites=[site])
+    building = inv.add_building(snap, "B")
+    floor = inv.add_floor(snap, building.id, "F")
+    room = inv.add_room(snap, floor.id, "R")
+    dtype = inv.add_device_type(
+        snap, vendor="X", model="Y", role=DeviceRole.SWITCH, port_count=1
+    )
+    inv.add_device(snap, dtype.id, "a", room_id=room.id)
+    inv.add_device(snap, dtype.id, "b", room_id=room.id)
+    fp.ensure_assets_for_floor(snap, floor.id)
+    a, b = snap.floor_plan_assets[0], snap.floor_plan_assets[1]
+    old = {a.id: (a.x, a.y), b.id: (b.x, b.y)}
+    changes = {
+        a.id: (a.x, a.y, a.x + 10, a.y + 5),
+        b.id: (b.x, b.y, b.x + 10, b.y + 5),
+    }
+    cmd = MoveFloorAssetsCommand(snap, changes)
+    cmd.redo()
+    assert (a.x, a.y) == (old[a.id][0] + 10, old[a.id][1] + 5)
+    cmd.undo()
+    assert (a.x, a.y) == old[a.id]
+    assert (b.x, b.y) == old[b.id]
+
+
 def test_fastapi_http_roundtrip(tmp_path: Path):
     fastapi = pytest.importorskip("fastapi")
     from fastapi.testclient import TestClient
