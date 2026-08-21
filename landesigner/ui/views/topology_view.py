@@ -34,6 +34,7 @@ from landesigner.ui.commands.topology_commands import (
     DeleteCableCommand,
     LayoutTopologyCommand,
     MoveNodeCommand,
+    MoveNodesCommand,
 )
 from landesigner.ui.icons import icon_action_button
 from landesigner.ui.labels import role_label
@@ -48,12 +49,14 @@ GRID = 20.0
 
 class TopologyScene(QGraphicsScene):
     node_move_committed = Signal(object, float, float, float, float)  # id, ox, oy, nx, ny
+    nodes_moved = Signal(object)  # dict[UUID, (ox, oy, nx, ny)]
     edit_device_requested = Signal(object)  # device_id
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setSceneRect(-2000, -2000, 6000, 6000)
         self.setBackgroundBrush(QBrush(QColor("#f4f7f8")))
+        self._group_drag_primary: DeviceNodeItem | None = None
 
     def request_edit_device(self, item: DeviceNodeItem) -> None:
         self.edit_device_requested.emit(item.device_id)
@@ -78,6 +81,18 @@ class TopologyScene(QGraphicsScene):
             new_pos.x(),
             new_pos.y(),
         )
+
+    def commit_nodes_moved(
+        self,
+        changes: dict[UUID, tuple[float, float, float, float]],
+    ) -> None:
+        if not changes:
+            return
+        if len(changes) == 1:
+            node_id, (ox, oy, nx, ny) = next(iter(changes.items()))
+            self.node_move_committed.emit(node_id, ox, oy, nx, ny)
+            return
+        self.nodes_moved.emit(changes)
 
     def drawBackground(self, painter: QPainter, rect) -> None:  # noqa: N802
         super().drawBackground(painter, rect)
@@ -124,7 +139,7 @@ class TopologyView(QWidget):
         toolbar = QHBoxLayout()
         toolbar.setSpacing(8)
         self._hint = QLabel(
-            "Колёсико — зум · Shift+ЛКМ — пан · узлы к сетке · Delete — связь",
+            "Колёсико — зум · Shift+ЛКМ — пан · рамка — группа · узлы к сетке · Delete — связь",
             self,
         )
         self._hint.setObjectName("PanelSubtitle")
@@ -186,6 +201,7 @@ class TopologyView(QWidget):
         layout.addLayout(legend)
 
         self._scene.node_move_committed.connect(self._on_node_move_committed)
+        self._scene.nodes_moved.connect(self._on_nodes_moved)
         self._scene.selectionChanged.connect(self._on_selection_changed)
         self._scene.edit_device_requested.connect(self.edit_device_requested.emit)
 
@@ -316,7 +332,7 @@ class TopologyView(QWidget):
         else:
             self._view.setDragMode(QGraphicsView.DragMode.RubberBandDrag)
             self._hint.setText(
-                "Колёсико — зум · Shift+ЛКМ — пан · узлы к сетке · Delete — связь"
+                "Колёсико — зум · Shift+ЛКМ — пан · рамка — группа · узлы к сетке · Delete — связь"
             )
             self._view.unsetCursor()
             self._clear_connect_highlight()
@@ -508,6 +524,20 @@ class TopologyView(QWidget):
             old_y,
             new_x,
             new_y,
+            on_changed=self._apply_positions_from_snapshot,
+        )
+        self._undo.push(cmd)
+        self.topology_changed.emit()
+
+    def _on_nodes_moved(
+        self,
+        changes: dict[UUID, tuple[float, float, float, float]],
+    ) -> None:
+        if self._snapshot is None or self._connect_mode or not changes:
+            return
+        cmd = MoveNodesCommand(
+            self._snapshot,
+            changes,
             on_changed=self._apply_positions_from_snapshot,
         )
         self._undo.push(cmd)

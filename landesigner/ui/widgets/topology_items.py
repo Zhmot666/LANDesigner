@@ -76,6 +76,8 @@ class DeviceNodeItem(QGraphicsRectItem):
         self._subtitle.setPos(14, 34)
 
         self._drag_start: QPointF | None = None
+        self._group_starts: dict[UUID, QPointF] = {}
+        self._in_group_move = False
 
     def set_labels(self, hostname: str, role_label: str) -> None:
         self.hostname = hostname or "—"
@@ -96,7 +98,42 @@ class DeviceNodeItem(QGraphicsRectItem):
 
     def itemChange(self, change, value):  # noqa: N802 — Qt API
         if change == QGraphicsItem.GraphicsItemChange.ItemPositionChange:
-            pos: QPointF = value
+            scene = self.scene()
+            primary = getattr(scene, "_group_drag_primary", None) if scene else None
+            # Второстепенные узлы группы: отклоняем автосдвиг Qt, двигает primary.
+            if (
+                primary is not None
+                and primary is not self
+                and self.node_id in getattr(primary, "_group_starts", {})
+            ):
+                return self.pos()
+            if (
+                primary is self
+                and self._drag_start is not None
+                and len(self._group_starts) > 1
+            ):
+                pos: QPointF = value
+                raw_dx = pos.x() - self._drag_start.x()
+                raw_dy = pos.y() - self._drag_start.y()
+                snap_dx = round(raw_dx / SNAP_GRID) * SNAP_GRID
+                snap_dy = round(raw_dy / SNAP_GRID) * SNAP_GRID
+                if scene is not None and not self._in_group_move:
+                    self._in_group_move = True
+                    try:
+                        for graphic in scene.items():
+                            if not isinstance(graphic, DeviceNodeItem) or graphic is self:
+                                continue
+                            start = self._group_starts.get(graphic.node_id)
+                            if start is None:
+                                continue
+                            graphic.setPos(start.x() + snap_dx, start.y() + snap_dy)
+                    finally:
+                        self._in_group_move = False
+                return QPointF(
+                    self._drag_start.x() + snap_dx,
+                    self._drag_start.y() + snap_dy,
+                )
+            pos = value
             gx = round(pos.x() / SNAP_GRID) * SNAP_GRID
             gy = round(pos.y() / SNAP_GRID) * SNAP_GRID
             return QPointF(gx, gy)
@@ -113,16 +150,49 @@ class DeviceNodeItem(QGraphicsRectItem):
         super().mouseDoubleClickEvent(event)
 
     def mousePressEvent(self, event) -> None:  # noqa: N802
-        self._drag_start = self.pos()
         super().mousePressEvent(event)
+        self._drag_start = QPointF(self.pos())
+        self._group_starts = {}
+        scene = self.scene()
+        if scene is not None:
+            for graphic in scene.selectedItems():
+                if isinstance(graphic, DeviceNodeItem):
+                    self._group_starts[graphic.node_id] = QPointF(graphic.pos())
+            if self.node_id not in self._group_starts:
+                self._group_starts[self.node_id] = QPointF(self.pos())
+            if len(self._group_starts) > 1:
+                scene._group_drag_primary = self  # type: ignore[attr-defined]
+            else:
+                scene._group_drag_primary = None  # type: ignore[attr-defined]
 
     def mouseReleaseEvent(self, event) -> None:  # noqa: N802
         super().mouseReleaseEvent(event)
-        if self._drag_start is not None and self._drag_start != self.pos():
-            scene = self.scene()
-            if hasattr(scene, "commit_node_move"):
-                scene.commit_node_move(self, self._drag_start, self.pos())  # type: ignore[attr-defined]
+        scene = self.scene()
+        if scene is not None and getattr(scene, "_group_drag_primary", None) is self:
+            scene._group_drag_primary = None  # type: ignore[attr-defined]
+        if self._group_starts and scene is not None and hasattr(scene, "commit_nodes_moved"):
+            by_id = {
+                graphic.node_id: graphic
+                for graphic in scene.items()
+                if isinstance(graphic, DeviceNodeItem)
+            }
+            changes: dict[UUID, tuple[float, float, float, float]] = {}
+            for node_id, old_pos in self._group_starts.items():
+                graphic = by_id.get(node_id)
+                if graphic is None:
+                    continue
+                new_pos = graphic.pos()
+                if abs(old_pos.x() - new_pos.x()) > 0.01 or abs(old_pos.y() - new_pos.y()) > 0.01:
+                    changes[node_id] = (
+                        old_pos.x(),
+                        old_pos.y(),
+                        new_pos.x(),
+                        new_pos.y(),
+                    )
+            if changes:
+                scene.commit_nodes_moved(changes)  # type: ignore[attr-defined]
         self._drag_start = None
+        self._group_starts = {}
 
     def paint(
         self,

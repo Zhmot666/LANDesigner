@@ -39,16 +39,18 @@ class MoveNodeCommand(QUndoCommand):
             self._on_changed()
 
 
-class LayoutTopologyCommand(QUndoCommand):
-    """Автораскладка: словарь node_id → (old_x, old_y, new_x, new_y)."""
+class MoveNodesCommand(QUndoCommand):
+    """Групповое перемещение: node_id → (old_x, old_y, new_x, new_y)."""
 
     def __init__(
         self,
         snapshot: ProjectSnapshot,
         changes: dict[UUID, tuple[float, float, float, float]],
         on_changed=None,
+        *,
+        title: str = "Перемещение узлов",
     ) -> None:
-        super().__init__("Автораскладка схемы")
+        super().__init__(title)
         self._snapshot = snapshot
         self._changes = dict(changes)
         self._on_changed = on_changed
@@ -72,6 +74,19 @@ class LayoutTopologyCommand(QUndoCommand):
         if self._on_changed:
             self._on_changed()
 
+
+class LayoutTopologyCommand(MoveNodesCommand):
+    """Автораскладка — тот же механизм, другой заголовок Undo."""
+
+    def __init__(
+        self,
+        snapshot: ProjectSnapshot,
+        changes: dict[UUID, tuple[float, float, float, float]],
+        on_changed=None,
+    ) -> None:
+        super().__init__(
+            snapshot, changes, on_changed, title="Автораскладка схемы"
+        )
 
 class AddCableCommand(QUndoCommand):
     def __init__(

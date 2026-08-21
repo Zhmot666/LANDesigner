@@ -142,6 +142,29 @@ def test_snap_and_auto_layout():
     assert again == {}
 
 
+def test_move_nodes_command_group_undo():
+    from PySide6.QtWidgets import QApplication
+
+    from landesigner.ui.commands.topology_commands import MoveNodesCommand
+
+    _ = QApplication.instance() or QApplication([])
+    snap = _snap_with_devices()
+    topo.ensure_topology(snap)
+    a, b = snap.topology_nodes[0], snap.topology_nodes[1]
+    old_a, old_b = (a.x, a.y), (b.x, b.y)
+    changes = {
+        a.id: (old_a[0], old_a[1], 200.0, 120.0),
+        b.id: (old_b[0], old_b[1], 240.0, 160.0),
+    }
+    cmd = MoveNodesCommand(snap, changes)
+    cmd.redo()
+    assert (a.x, a.y) == (200.0, 120.0)
+    assert (b.x, b.y) == (240.0, 160.0)
+    cmd.undo()
+    assert (a.x, a.y) == old_a
+    assert (b.x, b.y) == old_b
+
+
 def test_add_delete_cable_commands_undo():
     from PySide6.QtWidgets import QApplication
 
