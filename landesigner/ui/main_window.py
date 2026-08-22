@@ -59,6 +59,13 @@ from landesigner.ui.dialogs.sync_dialogs import (
     save_sync_settings,
 )
 from landesigner.ui.icons import app_icon
+from landesigner.ui.recent_projects import (
+    add_recent_project,
+    clear_recent_projects,
+    list_recent_projects,
+    recent_menu_label,
+    recent_projects_start_dir,
+)
 from landesigner.ui.views.device_types_view import DeviceTypesView
 from landesigner.ui.views.floor_plan_view import FloorPlanView
 from landesigner.ui.views.inventory_view import InventoryView
@@ -125,6 +132,8 @@ class MainWindow(QMainWindow):
         action_exit = QAction("Выход", self)
         file_menu.addAction(action_new)
         file_menu.addAction(action_open)
+        self._recent_menu = file_menu.addMenu("Последние")
+        self._recent_menu.aboutToShow.connect(self._rebuild_recent_menu)
         file_menu.addAction(action_save)
         file_menu.addSeparator()
         file_menu.addAction(action_export_csv)
@@ -278,6 +287,46 @@ class MainWindow(QMainWindow):
         if len(sizes) >= 2 and sizes[0] >= _SIDEBAR_MIN_WIDTH:
             settings = QSettings("LanDesigner", "LanDesigner")
             settings.setValue("ui/main_splitter", sizes[:2])
+
+    def _rebuild_recent_menu(self) -> None:
+        self._recent_menu.clear()
+        paths = list_recent_projects()
+        if not paths:
+            empty = self._recent_menu.addAction("(пока пусто)")
+            empty.setEnabled(False)
+            return
+        for path in paths:
+            action = self._recent_menu.addAction(recent_menu_label(path))
+            action.setToolTip(path)
+            action.triggered.connect(
+                lambda _checked=False, project_path=path: self._open_recent_project(
+                    project_path
+                )
+            )
+        self._recent_menu.addSeparator()
+        clear_action = self._recent_menu.addAction("Очистить список")
+        clear_action.triggered.connect(self._on_clear_recent_projects)
+
+    def _on_clear_recent_projects(self) -> None:
+        clear_recent_projects()
+
+    def _open_recent_project(self, file_path: str) -> None:
+        if not self._offer_save_before_leave():
+            return
+        self._load_project_file(file_path)
+
+    def _load_project_file(self, file_path: str) -> None:
+        try:
+            self._release_sync_lock()
+            self._active_snapshot = self._service.open_project(file_path)
+            self._active_file = file_path
+            self._dirty = False
+            add_recent_project(file_path)
+            self._refresh_ui()
+            self._try_acquire_sync_lock(quiet=True)
+            self._update_sync_status()
+        except Exception as e:
+            QMessageBox.critical(self, "Ошибка открытия", str(e))
 
     def _dock_device_card(self, *_args) -> None:
         """На инвентаре — карточка внизу справа; на схеме/плане — справа от вкладки."""
@@ -904,22 +953,12 @@ class MainWindow(QMainWindow):
         file_path, _ = QFileDialog.getOpenFileName(
             self,
             "Открыть проект",
-            "",
+            recent_projects_start_dir(),
             "Проект LanDesigner (*.lanproj);;Все файлы (*.*)",
         )
         if not file_path:
             return
-
-        try:
-            self._release_sync_lock()
-            self._active_snapshot = self._service.open_project(file_path)
-            self._active_file = file_path
-            self._dirty = False
-            self._refresh_ui()
-            self._try_acquire_sync_lock(quiet=True)
-            self._update_sync_status()
-        except Exception as e:
-            QMessageBox.critical(self, "Ошибка открытия", str(e))
+        self._load_project_file(file_path)
 
     def _on_save(self) -> None:
         snapshot = self._require_snapshot()
@@ -946,6 +985,7 @@ class MainWindow(QMainWindow):
             self._service.save_project(file_path=file_path, snapshot=snapshot)
             self._active_file = file_path
             self._dirty = False
+            add_recent_project(file_path)
             self._refresh_ui()
             self._update_sync_status()
         except Exception as e:
@@ -996,12 +1036,7 @@ class MainWindow(QMainWindow):
         try:
             url, _ = load_sync_settings()
             sync_svc.clone_project(client, project_id=project_id, dest_path=dest, server_url=url)
-            self._active_file = dest
-            self._active_snapshot = self._service.open_project(dest)
-            self._dirty = False
-            self._refresh_ui()
-            self._try_acquire_sync_lock()
-            self._update_sync_status()
+            self._load_project_file(dest)
         except Exception as e:
             QMessageBox.critical(self, "Клонирование", str(e))
 
