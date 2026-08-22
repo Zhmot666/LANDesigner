@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (
 from landesigner.adapters.local_sqlite.repository import LocalSqliteRepository
 from landesigner.adapters.remote import RemoteHttpClient
 from landesigner.domain.entities import ProjectMeta, ProjectSnapshot, Site, utcnow
-from landesigner.ports.remote import RemoteAuthError, RemoteConflictError
+from landesigner.ports.remote import RemoteAuthError, RemoteConflictError, RemoteLockConflictError
 from landesigner.services import catalog as catalog_svc
 from landesigner.services import device_type_preset as type_preset_svc
 from landesigner.services import import_export as csv_io
@@ -53,6 +53,7 @@ from landesigner.ui.dialogs.sync_dialogs import (
     SyncConflictDialog,
     SyncSettingsDialog,
     load_sync_settings,
+    load_sync_identity,
     save_sync_settings,
 )
 from landesigner.ui.views.device_types_view import DeviceTypesView
@@ -84,6 +85,8 @@ class MainWindow(QMainWindow):
         self._reports_view = ReportsView()
         self._device_card = ContextCard()
         self._syncing_selection = False
+        self._sync_lock_holder: str | None = None
+        self._sync_lock_is_mine = False
 
         self._init_ui()
         self._wire_signals()
@@ -719,8 +722,60 @@ class MainWindow(QMainWindow):
                 file_path=self._active_file,
                 snapshot=self._active_snapshot,
                 dirty=self._dirty,
+                lock_holder=self._sync_lock_holder,
+                lock_is_mine=self._sync_lock_is_mine,
             )
         )
+
+    def _sync_client_identity(self) -> tuple[str, str]:
+        return load_sync_identity()
+
+    def _release_sync_lock(self) -> None:
+        if not self._sync_lock_is_mine or self._active_file is None:
+            self._sync_lock_holder = None
+            self._sync_lock_is_mine = False
+            return
+        _, client_id = self._sync_client_identity()
+        try:
+            sync_svc.release_project_lock(
+                self._remote_client(),
+                file_path=self._active_file,
+                client_id=client_id,
+            )
+        except Exception:
+            pass
+        self._sync_lock_holder = None
+        self._sync_lock_is_mine = False
+
+    def _try_acquire_sync_lock(self, *, quiet: bool = False) -> None:
+        self._sync_lock_holder = None
+        self._sync_lock_is_mine = False
+        if self._active_file is None or sync_svc.load_sync_state(self._active_file) is None:
+            self._update_sync_status()
+            return
+        client_name, client_id = self._sync_client_identity()
+        try:
+            lock = sync_svc.acquire_project_lock(
+                self._remote_client(),
+                file_path=self._active_file,
+                client_id=client_id,
+                client_name=client_name,
+            )
+            self._sync_lock_holder = lock.holder_name
+            self._sync_lock_is_mine = True
+        except RemoteLockConflictError as exc:
+            self._sync_lock_holder = exc.lock.holder_name
+            self._sync_lock_is_mine = False
+            if not quiet:
+                QMessageBox.information(
+                    self,
+                    "Блокировка проекта",
+                    f"Проект уже редактирует: {exc.lock.holder_name}.\n"
+                    "Push недоступен, пока активна чужая блокировка. Pull — по-прежнему можно.",
+                )
+        except Exception:
+            pass
+        self._update_sync_status()
 
     def _remote_client(self) -> RemoteHttpClient:
         url, token = load_sync_settings()
@@ -767,6 +822,7 @@ class MainWindow(QMainWindow):
         return not self._dirty
 
     def closeEvent(self, event) -> None:  # noqa: N802 — Qt API
+        self._release_sync_lock()
         if self._offer_save_before_leave():
             event.accept()
         else:
@@ -775,6 +831,7 @@ class MainWindow(QMainWindow):
     def _on_new(self) -> None:
         if not self._offer_save_before_leave():
             return
+        self._release_sync_lock()
         self._active_file = None
         meta = ProjectMeta(name="Новый проект")
         site = Site(project_id=meta.id, name="Площадка")
@@ -796,10 +853,12 @@ class MainWindow(QMainWindow):
             return
 
         try:
+            self._release_sync_lock()
             self._active_snapshot = self._service.open_project(file_path)
             self._active_file = file_path
             self._dirty = False
             self._refresh_ui()
+            self._try_acquire_sync_lock(quiet=True)
             self._update_sync_status()
         except Exception as e:
             QMessageBox.critical(self, "Ошибка открытия", str(e))
@@ -838,11 +897,11 @@ class MainWindow(QMainWindow):
         dialog = SyncSettingsDialog(self)
         if dialog.exec() != SyncSettingsDialog.DialogCode.Accepted:
             return
-        url, token = dialog.values()
+        url, token, client_name = dialog.values()
         if not url:
             QMessageBox.warning(self, "Синхронизация", "Укажите URL сервера.")
             return
-        save_sync_settings(url, token)
+        save_sync_settings(url, token, client_name)
         self._update_sync_status()
 
     def _on_sync_clone(self) -> None:
@@ -879,10 +938,11 @@ class MainWindow(QMainWindow):
         try:
             url, _ = load_sync_settings()
             sync_svc.clone_project(client, project_id=project_id, dest_path=dest, server_url=url)
-            self._active_snapshot = self._service.open_project(dest)
             self._active_file = dest
+            self._active_snapshot = self._service.open_project(dest)
             self._dirty = False
             self._refresh_ui()
+            self._try_acquire_sync_lock()
             self._update_sync_status()
         except Exception as e:
             QMessageBox.critical(self, "Клонирование", str(e))
@@ -912,6 +972,7 @@ class MainWindow(QMainWindow):
                 server_url=url,
             )
             self._service.save_project(file_path=self._active_file, snapshot=snapshot)
+            self._try_acquire_sync_lock(quiet=True)
             self._update_sync_status()
             QMessageBox.information(self, "Синхронизация", "Проект опубликован на сервере.")
         except RemoteAuthError as e:
@@ -930,17 +991,37 @@ class MainWindow(QMainWindow):
         if sync_svc.load_sync_state(self._active_file) is None:
             self._on_sync_publish()
             return
+        client_name, client_id = self._sync_client_identity()
         try:
             client = self._remote_client()
+            sync_svc.acquire_project_lock(
+                client,
+                file_path=self._active_file,
+                client_id=client_id,
+                client_name=client_name,
+            )
             sync_svc.push_project(
                 client,
                 file_path=self._active_file,
                 snapshot=snapshot,
+                client_id=client_id,
+                client_name=client_name,
             )
+            self._try_acquire_sync_lock(quiet=True)
             self._update_sync_status()
             QMessageBox.information(self, "Push", "Изменения отправлены на сервер.")
         except RemoteConflictError as e:
             self._resolve_push_conflict(e)
+        except RemoteLockConflictError as e:
+            self._sync_lock_holder = e.lock.holder_name
+            self._sync_lock_is_mine = False
+            self._update_sync_status()
+            QMessageBox.warning(
+                self,
+                "Push",
+                f"Проект заблокирован: {e.lock.holder_name}.\n"
+                "Дождитесь освобождения или договоритесь с коллегой.",
+            )
         except RemoteAuthError as e:
             self._sync_auth_failed("Push", e)
         except Exception as e:
@@ -984,12 +1065,16 @@ class MainWindow(QMainWindow):
             return
         try:
             client = self._remote_client()
+            client_name, client_id = self._sync_client_identity()
             sync_svc.push_project(
                 client,
                 file_path=self._active_file,
                 snapshot=snapshot,
                 force=True,
+                client_id=client_id,
+                client_name=client_name,
             )
+            self._try_acquire_sync_lock(quiet=True)
             self._update_sync_status()
             QMessageBox.information(self, "Push", "Сервер перезаписан локальной версией.")
         except Exception as e:
@@ -1018,16 +1103,18 @@ class MainWindow(QMainWindow):
                 return
         try:
             client = self._remote_client()
-            blob, _ = sync_svc.pull_project(client, file_path=self._active_file)
+            blob, _, backup = sync_svc.pull_project(
+                client, file_path=self._active_file, backup_before=True
+            )
             self._active_snapshot = self._service.open_project(self._active_file)
             self._dirty = False
             self._refresh_ui()
+            self._try_acquire_sync_lock(quiet=True)
             self._update_sync_status()
-            QMessageBox.information(
-                self,
-                "Pull",
-                f"Загружена серверная версия (rev {blob.info.revision}).",
-            )
+            msg = f"Загружена серверная версия (rev {blob.info.revision})."
+            if backup is not None:
+                msg += f"\n\nЛокальная копия сохранена в снимок:\n{backup.parent.name}"
+            QMessageBox.information(self, "Pull", msg)
         except RemoteAuthError as e:
             self._sync_auth_failed("Pull", e)
         except Exception as e:

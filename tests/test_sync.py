@@ -8,7 +8,13 @@ import pytest
 
 from landesigner.adapters.local_sqlite.repository import LocalSqliteRepository
 from landesigner.domain.entities import ProjectMeta, ProjectSnapshot, Site
-from landesigner.ports.remote import RemoteConflictError, RemoteProjectBlob, RemoteProjectInfo
+from landesigner.ports.remote import (
+    RemoteConflictError,
+    RemoteLockConflictError,
+    RemoteLockInfo,
+    RemoteProjectBlob,
+    RemoteProjectInfo,
+)
 from landesigner.services import sync as sync_svc
 from landesigner.services.project import ProjectService
 from server.store import ConflictError, ProjectStore
@@ -21,15 +27,20 @@ class StoreRemoteAdapter:
         self._store = store
 
     def list_projects(self) -> list[RemoteProjectInfo]:
-        return [
-            RemoteProjectInfo(
-                id=p.id,
-                name=p.name,
-                revision=p.revision,
-                updated_at=p.updated_at,
+        items: list[RemoteProjectInfo] = []
+        for p in self._store.list_projects():
+            lock = self._store.get_lock(p.id)
+            locked_by = lock.holder_name if lock and lock.is_active else None
+            items.append(
+                RemoteProjectInfo(
+                    id=p.id,
+                    name=p.name,
+                    revision=p.revision,
+                    updated_at=p.updated_at,
+                    locked_by=locked_by,
+                )
             )
-            for p in self._store.list_projects()
-        ]
+        return items
 
     def get_project(self, project_id: UUID) -> RemoteProjectBlob:
         project = self._store.get(project_id)
@@ -73,7 +84,26 @@ class StoreRemoteAdapter:
         new_revision: int,
         data: bytes,
         force: bool = False,
+        client_id: str = "",
+        client_name: str = "",
     ) -> RemoteProjectInfo:
+        if client_id.strip() and not force:
+            lock = self._store.get_lock(project_id)
+            if (
+                lock is not None
+                and lock.is_active
+                and lock.holder_id != client_id.strip()
+            ):
+                raise RemoteLockConflictError(
+                    "locked",
+                    RemoteLockInfo(
+                        project_id=project_id,
+                        holder_name=lock.holder_name,
+                        holder_id=lock.holder_id,
+                        acquired_at=lock.acquired_at,
+                        expires_at=lock.expires_at,
+                    ),
+                )
         try:
             project = self._store.push(
                 project_id,
@@ -97,6 +127,56 @@ class StoreRemoteAdapter:
             revision=project.revision,
             updated_at=project.updated_at,
         )
+
+    def get_lock(self, project_id: UUID) -> RemoteLockInfo | None:
+        lock = self._store.get_lock(project_id)
+        if lock is None or not lock.is_active:
+            return None
+        return RemoteLockInfo(
+            project_id=lock.project_id,
+            holder_name=lock.holder_name,
+            holder_id=lock.holder_id,
+            acquired_at=lock.acquired_at,
+            expires_at=lock.expires_at,
+        )
+
+    def acquire_lock(
+        self,
+        project_id: UUID,
+        *,
+        client_id: str,
+        client_name: str,
+    ) -> RemoteLockInfo:
+        from server.locks import LockConflictError
+
+        try:
+            lock = self._store.acquire_lock(
+                project_id,
+                holder_name=client_name,
+                holder_id=client_id,
+            )
+        except LockConflictError as exc:
+            current = exc.current
+            raise RemoteLockConflictError(
+                "locked",
+                RemoteLockInfo(
+                    project_id=current.project_id,
+                    holder_name=current.holder_name,
+                    holder_id=current.holder_id,
+                    acquired_at=current.acquired_at,
+                    expires_at=current.expires_at,
+                ),
+            ) from exc
+        return RemoteLockInfo(
+            project_id=lock.project_id,
+            holder_name=lock.holder_name,
+            holder_id=lock.holder_id,
+            acquired_at=lock.acquired_at,
+            expires_at=lock.expires_at,
+        )
+
+    def release_lock(self, project_id: UUID, *, client_id: str) -> bool:
+        return self._store.release_lock(project_id, client_id)
 
 
 def _make_lanproj(tmp_path: Path, name: str = "SyncDemo") -> tuple[str, ProjectSnapshot]:
@@ -217,6 +297,67 @@ def test_conflict_diff_compares_devices(tmp_path: Path):
     assert "sw-local" in text
     assert "sw-remote" in text
     assert "sw-both" in text and "sw-renamed" in text
+
+
+def test_project_lock_acquire_conflict_and_push(tmp_path: Path):
+    store = ProjectStore(tmp_path / "locks.db")
+    remote = StoreRemoteAdapter(store)
+    path, snap = _make_lanproj(tmp_path, "LockDemo")
+    sync_svc.publish_project(remote, file_path=path, snapshot=snap, server_url="http://t")
+
+    lock_a = remote.acquire_lock(snap.meta.id, client_id="a", client_name="Alice")
+    assert lock_a.holder_name == "Alice"
+
+    with pytest.raises(RemoteLockConflictError) as exc:
+        remote.acquire_lock(snap.meta.id, client_id="b", client_name="Bob")
+    assert exc.value.lock.holder_name == "Alice"
+
+    snap.meta.revision = 2
+    ProjectService(LocalSqliteRepository()).save_project(path, snap)
+    with pytest.raises(RemoteLockConflictError):
+        remote.push_project(
+            snap.meta.id,
+            name=snap.meta.name,
+            expected_revision=1,
+            new_revision=2,
+            data=Path(path).read_bytes(),
+            client_id="b",
+            client_name="Bob",
+        )
+
+    remote.release_lock(snap.meta.id, client_id="a")
+    sync_svc.push_project(
+        remote,
+        file_path=path,
+        snapshot=snap,
+        client_id="b",
+        client_name="Bob",
+    )
+    assert sync_svc.load_sync_state(path).remote_revision == 2
+
+
+def test_pull_creates_backup_snapshot(tmp_path: Path):
+    store = ProjectStore(tmp_path / "pull_backup.db")
+    remote = StoreRemoteAdapter(store)
+    path, snap = _make_lanproj(tmp_path, "PullBackup")
+    sync_svc.publish_project(remote, file_path=path, snapshot=snap, server_url="http://t")
+
+    snap.meta.name = "Remote name"
+    snap.meta.revision = 2
+    ProjectService(LocalSqliteRepository()).save_project(path, snap)
+    sync_svc.push_project(remote, file_path=path, snapshot=snap, client_id="u1", client_name="U")
+
+    local = ProjectService(LocalSqliteRepository()).open_project(path)
+    local.meta.name = "Local edit"
+    local.meta.revision = 3
+    ProjectService(LocalSqliteRepository()).save_project(path, local)
+
+    blob, _, backup = sync_svc.pull_project(remote, file_path=path, backup_before=True)
+    assert blob.info.revision == 2
+    assert backup is not None
+    assert backup.is_file()
+    restored = ProjectService(LocalSqliteRepository()).open_project(path)
+    assert restored.meta.name == "Remote name"
 
 
 def test_check_connection_health_and_auth(tmp_path: Path):

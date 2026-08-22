@@ -10,6 +10,8 @@ from uuid import UUID
 from landesigner.ports.remote import (
     RemoteAuthError,
     RemoteConflictError,
+    RemoteLockConflictError,
+    RemoteLockInfo,
     RemoteProjectBlob,
     RemoteProjectInfo,
 )
@@ -23,12 +25,29 @@ def _parse_dt(value: str) -> datetime:
     return dt
 
 
+def _lock_from_json(project_id: UUID, payload: dict[str, Any] | None) -> RemoteLockInfo | None:
+    if not payload:
+        return None
+    return RemoteLockInfo(
+        project_id=project_id,
+        holder_name=str(payload.get("holder_name", "—")),
+        holder_id=str(payload.get("holder_id", "")),
+        acquired_at=_parse_dt(str(payload["acquired_at"])),
+        expires_at=_parse_dt(str(payload["expires_at"])),
+    )
+
+
 def _info_from_json(payload: dict[str, Any]) -> RemoteProjectInfo:
+    lock = payload.get("lock")
+    locked_by = None
+    if isinstance(lock, dict) and lock.get("holder_name"):
+        locked_by = str(lock["holder_name"])
     return RemoteProjectInfo(
         id=UUID(str(payload["id"])),
         name=str(payload["name"]),
         revision=int(payload["revision"]),
         updated_at=_parse_dt(str(payload["updated_at"])),
+        locked_by=locked_by,
     )
 
 
@@ -84,6 +103,8 @@ class RemoteHttpClient:
         new_revision: int,
         data: bytes,
         force: bool = False,
+        client_id: str = "",
+        client_name: str = "",
     ) -> RemoteProjectInfo:
         headers = {
             "X-Project-Name": name,
@@ -92,6 +113,9 @@ class RemoteHttpClient:
         }
         if force:
             headers["X-Force"] = "1"
+        if client_id.strip():
+            headers["X-Client-Id"] = client_id.strip()
+            headers["X-Client-Name"] = client_name.strip() or "—"
         try:
             payload = self._request_json(
                 "PUT",
@@ -102,7 +126,41 @@ class RemoteHttpClient:
             )
         except RemoteConflictError:
             raise
+        except RemoteLockConflictError:
+            raise
         return _info_from_json(payload)
+
+    def get_lock(self, project_id: UUID) -> RemoteLockInfo | None:
+        payload = self._request_json("GET", f"/projects/{project_id}/lock")
+        return _lock_from_json(project_id, payload.get("lock"))
+
+    def acquire_lock(
+        self,
+        project_id: UUID,
+        *,
+        client_id: str,
+        client_name: str,
+    ) -> RemoteLockInfo:
+        payload = self._request_json(
+            "PUT",
+            f"/projects/{project_id}/lock",
+            headers={
+                "X-Client-Id": client_id.strip(),
+                "X-Client-Name": client_name.strip() or "—",
+            },
+        )
+        lock = _lock_from_json(project_id, payload.get("lock"))
+        if lock is None:
+            raise RuntimeError("Сервер не вернул блокировку")
+        return lock
+
+    def release_lock(self, project_id: UUID, *, client_id: str) -> bool:
+        payload = self._request_json(
+            "DELETE",
+            f"/projects/{project_id}/lock",
+            headers={"X-Client-Id": client_id.strip()},
+        )
+        return bool(payload.get("released"))
 
     def check_connection(self) -> tuple[bool, str]:
         """Проверка URL и API-ключа. Возвращает (ok, сообщение)."""
@@ -114,7 +172,6 @@ class RemoteHttpClient:
                 status = str(payload.get("status", "ok"))
             except Exception:
                 pass
-            # Если ключ задан — дополнительно проверяем доступ к /projects.
             if self._token:
                 projects = self.list_projects()
                 return True, f"Сервер доступен ({status}), проектов: {len(projects)}"
@@ -180,10 +237,30 @@ class RemoteHttpClient:
             detail = exc.read().decode("utf-8", errors="replace")
             if exc.code in (401, 403):
                 raise RemoteAuthError(detail or "Ошибка авторизации") from exc
-            if exc.code == 409:
-                remote = self._conflict_info(detail)
-                raise RemoteConflictError(detail or "Конфликт revision", remote) from exc
+            if exc.code in (409, 423):
+                self._raise_conflict(exc.code, detail)
             raise RuntimeError(f"HTTP {exc.code}: {detail or exc.reason}") from exc
+
+    def _raise_conflict(self, code: int, detail: str) -> None:
+        try:
+            payload = json.loads(detail)
+        except Exception as exc:
+            raise RuntimeError(f"HTTP {code}: {detail}") from exc
+        if code == 423 or ("lock" in payload and "remote" not in payload):
+            lock_payload = payload.get("lock")
+            if isinstance(lock_payload, dict):
+                project_id = UUID(str(lock_payload.get("project_id", UUID(int=0))))
+                lock = _lock_from_json(project_id, lock_payload)
+                if lock is not None:
+                    message = str(payload.get("detail") or payload.get("message") or "locked")
+                    raise RemoteLockConflictError(message, lock) from None
+            raise RuntimeError(f"HTTP {code}: {detail}")
+        if "remote" in payload:
+            raise RemoteConflictError(
+                str(payload.get("detail") or "Конфликт revision"),
+                _info_from_json(payload["remote"]),
+            ) from None
+        raise RuntimeError(f"HTTP {code}: {detail}")
 
     def _conflict_info(self, detail: str) -> RemoteProjectInfo:
         try:

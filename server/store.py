@@ -8,6 +8,20 @@ from pathlib import Path
 from typing import Protocol
 from uuid import UUID
 
+from server.locks import (
+    DEFAULT_LOCK_TTL_SEC,
+    LockConflictError,
+    ProjectLock,
+    LOCK_SCHEMA_PG,
+    LOCK_SCHEMA_SQLITE,
+    pg_acquire_lock,
+    pg_get_lock,
+    pg_release_lock,
+    sqlite_acquire_lock,
+    sqlite_get_lock,
+    sqlite_release_lock,
+)
+
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc).replace(microsecond=0)
@@ -53,6 +67,19 @@ class ProjectStoreBackend(Protocol):
         force: bool = False,
     ) -> StoredProject: ...
 
+    def get_lock(self, project_id: UUID) -> ProjectLock | None: ...
+
+    def acquire_lock(
+        self,
+        project_id: UUID,
+        *,
+        holder_name: str,
+        holder_id: str,
+        ttl_sec: int = DEFAULT_LOCK_TTL_SEC,
+    ) -> ProjectLock: ...
+
+    def release_lock(self, project_id: UUID, holder_id: str) -> bool: ...
+
 
 _SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS projects (
@@ -91,7 +118,37 @@ class SqliteProjectStore:
     def _init_db(self) -> None:
         with self._connect() as conn:
             conn.executescript(_SCHEMA_SQL)
+            conn.executescript(LOCK_SCHEMA_SQLITE)
             conn.commit()
+
+    def get_lock(self, project_id: UUID) -> ProjectLock | None:
+        with self._connect() as conn:
+            return sqlite_get_lock(conn, project_id)
+
+    def acquire_lock(
+        self,
+        project_id: UUID,
+        *,
+        holder_name: str,
+        holder_id: str,
+        ttl_sec: int = DEFAULT_LOCK_TTL_SEC,
+    ) -> ProjectLock:
+        with self._connect() as conn:
+            lock = sqlite_acquire_lock(
+                conn,
+                project_id,
+                holder_name=holder_name,
+                holder_id=holder_id,
+                ttl_sec=ttl_sec,
+            )
+            conn.commit()
+            return lock
+
+    def release_lock(self, project_id: UUID, holder_id: str) -> bool:
+        with self._connect() as conn:
+            released = sqlite_release_lock(conn, project_id, holder_id)
+            conn.commit()
+            return released
 
     def list_projects(self) -> list[StoredProject]:
         with self._connect() as conn:
@@ -199,7 +256,37 @@ class PostgresProjectStore:
     def _init_db(self) -> None:
         with self._connect() as conn:
             conn.execute(_PG_SCHEMA_SQL)
+            conn.execute(LOCK_SCHEMA_PG)
             conn.commit()
+
+    def get_lock(self, project_id: UUID) -> ProjectLock | None:
+        with self._connect() as conn:
+            return pg_get_lock(conn, project_id)
+
+    def acquire_lock(
+        self,
+        project_id: UUID,
+        *,
+        holder_name: str,
+        holder_id: str,
+        ttl_sec: int = DEFAULT_LOCK_TTL_SEC,
+    ) -> ProjectLock:
+        with self._connect() as conn:
+            lock = pg_acquire_lock(
+                conn,
+                project_id,
+                holder_name=holder_name,
+                holder_id=holder_id,
+                ttl_sec=ttl_sec,
+            )
+            conn.commit()
+            return lock
+
+    def release_lock(self, project_id: UUID, holder_id: str) -> bool:
+        with self._connect() as conn:
+            released = pg_release_lock(conn, project_id, holder_id)
+            conn.commit()
+            return released
 
     def list_projects(self) -> list[StoredProject]:
         with self._connect() as conn:

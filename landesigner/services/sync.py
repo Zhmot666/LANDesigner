@@ -11,11 +11,14 @@ from landesigner.adapters.local_sqlite.repository import LocalSqliteRepository
 from landesigner.domain.entities import ProjectSnapshot
 from landesigner.ports.remote import (
     RemoteConflictError,
+    RemoteLockConflictError,
+    RemoteLockInfo,
     RemoteProjectBlob,
     RemoteProjectInfo,
     RemoteRepository,
 )
 from landesigner.services.project import ProjectService
+from landesigner.services.snapshots import create_snapshot
 
 
 @dataclass
@@ -83,6 +86,8 @@ def status_label(
     file_path: str | None,
     snapshot: ProjectSnapshot | None,
     dirty: bool,
+    lock_holder: str | None = None,
+    lock_is_mine: bool = False,
 ) -> str:
     if snapshot is None:
         return "Готово · локальный проект"
@@ -103,6 +108,11 @@ def status_label(
         sync = f"отстаёт от сервера (local {local} / remote {remote})"
     else:
         sync = f"синхронизирован (rev {local})"
+    if lock_holder:
+        if lock_is_mine:
+            sync += f" · блокировка: вы ({lock_holder})"
+        else:
+            sync += f" · редактирует: {lock_holder}"
     return f"{base} · {sync}"
 
 
@@ -160,6 +170,8 @@ def push_project(
     file_path: str | Path,
     snapshot: ProjectSnapshot,
     force: bool = False,
+    client_id: str = "",
+    client_name: str = "",
 ) -> SyncState:
     path = Path(file_path)
     state = load_sync_state(path)
@@ -174,6 +186,8 @@ def push_project(
             new_revision=snapshot.meta.revision,
             data=data,
             force=force,
+            client_id=client_id,
+            client_name=client_name,
         )
     except RemoteConflictError:
         raise
@@ -188,17 +202,61 @@ def pull_project(
     remote: RemoteRepository,
     *,
     file_path: str | Path,
-) -> tuple[RemoteProjectBlob, SyncState]:
+    backup_before: bool = True,
+) -> tuple[RemoteProjectBlob, SyncState, Path | None]:
     path = Path(file_path)
     state = load_sync_state(path)
     if state is None:
         raise ValueError("Проект не привязан к серверу. Сначала опубликуйте или клонируйте.")
+    backup_path: Path | None = None
+    if backup_before and path.is_file():
+        backup_path = create_snapshot(path, label="before_pull")
     blob = remote.get_project(state.project_uuid)
     path.write_bytes(blob.data)
     state.remote_revision = blob.info.revision
     state.last_synced_at = _now_iso()
     save_sync_state(path, state)
-    return blob, state
+    return blob, state, backup_path
+
+
+def acquire_project_lock(
+    remote: RemoteRepository,
+    *,
+    file_path: str | Path,
+    client_id: str,
+    client_name: str,
+) -> RemoteLockInfo:
+    state = load_sync_state(file_path)
+    if state is None:
+        raise ValueError("Проект не привязан к серверу.")
+    return remote.acquire_lock(
+        state.project_uuid,
+        client_id=client_id,
+        client_name=client_name,
+    )
+
+
+def release_project_lock(
+    remote: RemoteRepository,
+    *,
+    file_path: str | Path,
+    client_id: str,
+) -> bool:
+    state = load_sync_state(file_path)
+    if state is None:
+        return False
+    return remote.release_lock(state.project_uuid, client_id=client_id)
+
+
+def fetch_project_lock(
+    remote: RemoteRepository,
+    *,
+    file_path: str | Path,
+) -> RemoteLockInfo | None:
+    state = load_sync_state(file_path)
+    if state is None:
+        return None
+    return remote.get_lock(state.project_uuid)
 
 
 def list_remote_projects(remote: RemoteRepository) -> list[RemoteProjectInfo]:
@@ -298,6 +356,46 @@ def compare_snapshots(
             lines.append(f"  ~ hostname: {item}")
         if len(renamed) > 12:
             lines.append(f"  ~ … ещё {len(renamed) - 12}")
+
+    local_cables = {c.id: c for c in local.cables}
+    remote_cables = {c.id: c for c in remote.cables}
+    cable_only_local = [
+        c for cid, c in local_cables.items() if cid not in remote_cables
+    ]
+    cable_only_remote = [
+        c for cid, c in remote_cables.items() if cid not in local_cables
+    ]
+    cable_changed: list[str] = []
+    for cid, loc in local_cables.items():
+        rem = remote_cables.get(cid)
+        if rem is None:
+            continue
+        if (loc.label or "") != (rem.label or "") or loc.length_m != rem.length_m:
+            cable_changed.append(
+                f"«{loc.label or '—'}» ↔ «{rem.label or '—'}» "
+                f"({loc.length_m or '—'} / {rem.length_m or '—'} м)"
+            )
+    if cable_only_local or cable_only_remote or cable_changed:
+        lines.append("")
+        lines.append("Кабели:")
+        for cable in sorted(cable_only_local, key=lambda c: (c.label or "").casefold())[:8]:
+            lines.append(f"  − только локально: {cable.label or '—'}")
+        for cable in sorted(cable_only_remote, key=lambda c: (c.label or "").casefold())[:8]:
+            lines.append(f"  + только на сервере: {cable.label or '—'}")
+        for item in cable_changed[:8]:
+            lines.append(f"  ~ изменён: {item}")
+
+    local_vlans = {v.id: v for v in local.vlans}
+    remote_vlans = {v.id: v for v in remote.vlans}
+    vlan_only_local = [v for vid, v in local_vlans.items() if vid not in remote_vlans]
+    vlan_only_remote = [v for vid, v in remote_vlans.items() if vid not in local_vlans]
+    if vlan_only_local or vlan_only_remote:
+        lines.append("")
+        lines.append("VLAN:")
+        for vlan in sorted(vlan_only_local, key=lambda v: v.vlan_id)[:8]:
+            lines.append(f"  − только локально: {vlan.vlan_id} {vlan.name}")
+        for vlan in sorted(vlan_only_remote, key=lambda v: v.vlan_id)[:8]:
+            lines.append(f"  + только на сервере: {vlan.vlan_id} {vlan.name}")
 
     if len(lines) <= 2:
         lines.append("")

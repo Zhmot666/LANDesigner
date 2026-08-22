@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from uuid import UUID
+import os
+from uuid import UUID, uuid4
 
 from PySide6.QtCore import QSettings, Qt
 from PySide6.QtWidgets import (
@@ -25,6 +26,8 @@ SETTINGS_ORG = "LanDesigner"
 SETTINGS_APP = "LanDesigner"
 KEY_SERVER_URL = "sync/server_url"
 KEY_API_TOKEN = "sync/api_token"
+KEY_CLIENT_NAME = "sync/client_name"
+KEY_CLIENT_ID = "sync/client_id"
 DEFAULT_SERVER_URL = "http://127.0.0.1:8765"
 
 
@@ -35,30 +38,56 @@ def load_sync_settings() -> tuple[str, str]:
     return url.rstrip("/"), token
 
 
-def save_sync_settings(server_url: str, api_token: str) -> None:
+def load_sync_identity() -> tuple[str, str]:
+    """Имя инженера и стабильный client_id для блокировок на сервере."""
+    settings = QSettings(SETTINGS_ORG, SETTINGS_APP)
+    name = str(settings.value(KEY_CLIENT_NAME, "") or "").strip()
+    client_id = str(settings.value(KEY_CLIENT_ID, "") or "").strip()
+    if not client_id:
+        client_id = str(uuid4())
+        settings.setValue(KEY_CLIENT_ID, client_id)
+    if not name:
+        name = (
+            os.environ.get("USERNAME")
+            or os.environ.get("USER")
+            or os.environ.get("COMPUTERNAME")
+            or "Инженер"
+        )
+    return name, client_id
+
+
+def save_sync_settings(server_url: str, api_token: str, client_name: str = "") -> None:
     settings = QSettings(SETTINGS_ORG, SETTINGS_APP)
     settings.setValue(KEY_SERVER_URL, server_url.rstrip("/"))
     settings.setValue(KEY_API_TOKEN, api_token)
+    if client_name.strip():
+        settings.setValue(KEY_CLIENT_NAME, client_name.strip())
+    load_sync_identity()
 
 
 class SyncSettingsDialog(QDialog):
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self.setWindowTitle("Сервер синхронизации")
-        self.resize(480, 220)
+        self.resize(480, 260)
         url, token = load_sync_settings()
+        client_name, _ = load_sync_identity()
         layout = QVBoxLayout(self)
         form = QFormLayout()
         self._url = QLineEdit(url, self)
         self._token = QLineEdit(token, self)
         self._token.setEchoMode(QLineEdit.EchoMode.Password)
         self._token.setPlaceholderText("Необязательно, если сервер без ключа")
+        self._client_name = QLineEdit(client_name, self)
+        self._client_name.setPlaceholderText("Отображается при блокировке проекта")
         form.addRow("URL сервера", self._url)
         form.addRow("API-ключ", self._token)
+        form.addRow("Ваше имя", self._client_name)
         layout.addLayout(form)
         layout.addWidget(
             QLabel(
                 "Локальный .lanproj остаётся offline-кэшем.\n"
+                "При открытии привязанного проекта запрашивается блокировка на сервере.\n"
                 "Запуск сервера: python -m server",
                 self,
             )
@@ -81,13 +110,17 @@ class SyncSettingsDialog(QDialog):
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
 
-    def values(self) -> tuple[str, str]:
-        return self._url.text().strip().rstrip("/"), self._token.text().strip()
+    def values(self) -> tuple[str, str, str]:
+        return (
+            self._url.text().strip().rstrip("/"),
+            self._token.text().strip(),
+            self._client_name.text().strip(),
+        )
 
     def _on_test(self) -> None:
         from landesigner.adapters.remote import RemoteHttpClient
 
-        url, token = self.values()
+        url, token = self.values()[:2]
         if not url:
             self._status.setText("Укажите URL сервера.")
             return
@@ -113,7 +146,10 @@ class RemoteProjectsDialog(QDialog):
         self._list = QListWidget(self)
         for info in projects:
             stamp = info.updated_at.strftime("%Y-%m-%d %H:%M")
-            item = QListWidgetItem(f"{info.name}  ·  rev {info.revision}  ·  {stamp}")
+            lock_txt = f"  ·  lock: {info.locked_by}" if info.locked_by else ""
+            item = QListWidgetItem(
+                f"{info.name}  ·  rev {info.revision}  ·  {stamp}{lock_txt}"
+            )
             item.setData(Qt.ItemDataRole.UserRole, str(info.id))
             self._list.addItem(item)
         layout.addWidget(self._list)
