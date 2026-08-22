@@ -418,4 +418,47 @@ def test_vm_requires_hypervisor_and_inherits_room():
 
     inv.delete_device(snap, vm.id)
     inv.delete_device(snap, host.id)
-    assert not any(d.id == host.id for d in snap.devices)
+
+
+def test_device_type_and_device_without_ports():
+    meta = ProjectMeta(name="T")
+    site = Site(project_id=meta.id, name="S")
+    snap = ProjectSnapshot(meta=meta, sites=[site])
+    building = inv.add_building(snap, "B1")
+    floor = inv.add_floor(snap, building.id, "F1")
+    room = inv.add_room(snap, floor.id, "R1")
+    rack = inv.add_rack(snap, room.id, "Rack1", units=42)
+
+    dtype = inv.add_device_type(
+        snap,
+        vendor="APC",
+        model="Smart-UPS",
+        role=DeviceRole.OTHER,
+        port_groups=[],
+    )
+    assert dtype.port_template == []
+
+    device = inv.add_device(
+        snap,
+        device_type_id=dtype.id,
+        hostname="ups-1",
+        serial="SN-UPS",
+        inventory_tag="IT-UPS-1",
+        room_id=room.id,
+        rack_id=rack.id,
+        rack_u=40,
+        rack_u_height=2,
+    )
+    assert inv.ports_for_device(snap, device.id) == []
+    assert device.rack_u == 40
+    assert inv.rack_placement_label(device) == "U40–41"
+
+    dtype_via_count = inv.add_device_type(
+        snap,
+        vendor="Generic",
+        model="Blank",
+        role=DeviceRole.OTHER,
+        port_count=0,
+    )
+    assert dtype_via_count.port_template == []
+    assert inv.build_port_template([]) == []

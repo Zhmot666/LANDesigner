@@ -1280,9 +1280,6 @@ class MainWindow(QMainWindow):
         if dlg.exec() != DeviceTypeDialog.DialogCode.Accepted:
             return
         vendor, model, role, port_groups = dlg.values()
-        if not port_groups:
-            QMessageBox.warning(self, "Тип устройства", "Добавьте хотя бы одну группу портов.")
-            return
         dtype = inventory_service.add_device_type(
             snapshot,
             vendor=vendor,
@@ -1291,12 +1288,18 @@ class MainWindow(QMainWindow):
             port_groups=port_groups,
         )
         self._mark_dirty()
-        speeds = sorted({int(p["speed"]) for p in dtype.port_template})
-        speed_txt = "/".join(str(s) for s in speeds)
-        self.statusBar().showMessage(
-            f"Добавлен тип: {dtype.vendor} {dtype.model} "
-            f"({len(dtype.port_template)} порт., {speed_txt} Мбит/с)"
-        )
+        port_count = len(dtype.port_template)
+        if port_count:
+            speeds = sorted({int(p["speed"]) for p in dtype.port_template})
+            speed_txt = "/".join(str(s) for s in speeds)
+            self.statusBar().showMessage(
+                f"Добавлен тип: {dtype.vendor} {dtype.model} "
+                f"({port_count} порт., {speed_txt} Мбит/с)"
+            )
+        else:
+            self.statusBar().showMessage(
+                f"Добавлен тип: {dtype.vendor} {dtype.model} (без портов)"
+            )
 
     def _on_add_device_type_from_catalog(self) -> None:
         snapshot = self._require_snapshot()
@@ -1330,9 +1333,6 @@ class MainWindow(QMainWindow):
         if dlg.exec() != DeviceTypeDialog.DialogCode.Accepted:
             return
         vendor, model, role, port_groups = dlg.values()
-        if not port_groups:
-            QMessageBox.warning(self, "Тип устройства", "Добавьте хотя бы одну группу портов.")
-            return
 
         in_use = any(d.device_type_id == type_id for d in snapshot.devices)
         if in_use:

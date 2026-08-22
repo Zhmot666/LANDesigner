@@ -15,6 +15,7 @@ remote = [
   "fastapi>=0.110",
   "uvicorn>=0.27",
   "httpx>=0.27",
+  "psycopg[binary]>=3.1",
 ]
 dev = [
   "pytest>=8.0",
@@ -37,4 +38,7 @@ quote-style = "double"
 testpaths = ["tests"]
 addopts = "-q"
 pythonpath = ["."]
+markers = [
+  "postgres: интеграционный тест PostgreSQL (LANDESIGNER_TEST_DATABASE_URL)",
+]
 

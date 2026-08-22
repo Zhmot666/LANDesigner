@@ -125,6 +125,27 @@ def test_reports_devices_ports_cables_vlans():
     assert "<table>" in html
 
 
+def test_export_report_pdf(tmp_path):
+    from PySide6.QtWidgets import QApplication
+
+    from landesigner.ui.views.reports_view import export_report_pdf
+
+    _ = QApplication.instance() or QApplication([])
+    snap = _base_snap()
+    dtype = inv.add_device_type(
+        snap, vendor="X", model="Y", role=DeviceRole.SWITCH, port_count=1
+    )
+    inv.add_device(snap, dtype.id, "sw1")
+    table = reports_svc.build_report(snap, ReportKind.DEVICES)
+    html = reports_svc.report_to_html(table, project_name="PDF-Demo")
+    out = tmp_path / "devices.pdf"
+    export_report_pdf(html, out)
+    assert out.is_file()
+    assert out.stat().st_size > 200
+    # PDF magic
+    assert out.read_bytes()[:4] == b"%PDF"
+
+
 def test_issue_code_labels_russian():
     assert validation_svc.issue_code_label("cable_no_label") == "Кабель без метки"
     assert validation_svc.issue_code_label("duplicate_ip") == "Дублирующий IP"

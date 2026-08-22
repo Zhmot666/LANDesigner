@@ -280,15 +280,19 @@ def add_device_type(
 
     if port_groups is None:
         media_enum = media if isinstance(media, PortMedia) else PortMedia(str(media))
-        port_groups = [
-            {
-                "prefix": "Gi1/0/",
-                "count": max(1, int(port_count or 24)),
-                "media": media_enum.value,
-                "speed": int(speed),
-                "start": 1,
-            }
-        ]
+        count = int(port_count if port_count is not None else 24)
+        if count <= 0:
+            port_groups = []
+        else:
+            port_groups = [
+                {
+                    "prefix": "Gi1/0/",
+                    "count": count,
+                    "media": media_enum.value,
+                    "speed": int(speed),
+                    "start": 1,
+                }
+            ]
 
     template = build_port_template(port_groups)
     device_type = DeviceType(
@@ -329,8 +333,6 @@ def build_port_template(port_groups: list[dict]) -> list[dict]:
             if use_position:
                 entry["position"] = i
             template.append(entry)
-    if not template:
-        template = [{"name": "Gi1/0/1", "media": PortMedia.COPPER.value, "speed": 1000}]
     return template
 
 

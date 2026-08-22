@@ -7,14 +7,16 @@ from uuid import UUID
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 
-from server.store import ConflictError, ProjectStore
+from server.store import ConflictError, ProjectStoreBackend, SqliteProjectStore, create_project_store
 
 DEFAULT_DB = Path(os.environ.get("LANDESIGNER_SERVER_DB", "data/landesigner_server.db"))
 
 
-def create_app(store: ProjectStore | None = None, *, api_key: str | None = None) -> FastAPI:
+def create_app(
+    store: ProjectStoreBackend | None = None, *, api_key: str | None = None
+) -> FastAPI:
     app = FastAPI(title="LanDesigner Sync API", version="0.1.0")
-    app.state.store = store or ProjectStore(DEFAULT_DB)
+    app.state.store = store or create_project_store(db_path=DEFAULT_DB)
     expected_key = api_key if api_key is not None else os.environ.get("LANDESIGNER_API_KEY", "")
 
     def require_auth(

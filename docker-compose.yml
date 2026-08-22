@@ -1,0 +1,31 @@
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: landesigner
+      POSTGRES_PASSWORD: landesigner
+      POSTGRES_DB: landesigner
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U landesigner -d landesigner"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  server:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "8765:8765"
+    environment:
+      LANDESIGNER_DATABASE_URL: postgresql://landesigner:landesigner@db:5432/landesigner
+      LANDESIGNER_API_KEY: ${LANDESIGNER_API_KEY:-dev-secret}
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  pgdata:

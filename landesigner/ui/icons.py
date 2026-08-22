@@ -187,6 +187,18 @@ def _draw_print(p: QPainter, c: QColor) -> None:
     p.drawEllipse(QPointF(12.5, 8.0), 0.9, 0.9)
 
 
+def _draw_pdf(p: QPainter, c: QColor) -> None:
+    p.setPen(_pen(c, 1.5))
+    p.setBrush(Qt.BrushStyle.NoBrush)
+    p.drawRoundedRect(QRectF(4.0, 2.5, 10.0, 13.0), 1.2, 1.2)
+    p.drawLine(QPointF(11.0, 2.5), QPointF(14.0, 5.5))
+    p.drawLine(QPointF(11.0, 2.5), QPointF(11.0, 5.5))
+    p.drawLine(QPointF(11.0, 5.5), QPointF(14.0, 5.5))
+    p.drawLine(QPointF(6.0, 8.5), QPointF(12.0, 8.5))
+    p.drawLine(QPointF(6.0, 11.0), QPointF(12.0, 11.0))
+    p.drawLine(QPointF(6.0, 13.5), QPointF(10.0, 13.5))
+
+
 def _draw_clear(p: QPainter, c: QColor) -> None:
     p.setPen(_pen(c, 1.8))
     p.drawLine(QPointF(5.0, 5.0), QPointF(13.0, 13.0))
@@ -244,6 +256,7 @@ _DRAWERS = {
     "check": _draw_check,
     "report": _draw_report,
     "csv": _draw_csv,
+    "pdf": _draw_pdf,
     "print": _draw_print,
     "clear": _draw_clear,
     "cable": _draw_cable,

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor, QTextDocument
+from PySide6.QtGui import QColor, QPageLayout, QPageSize, QTextDocument
 from PySide6.QtPrintSupport import QPrintDialog, QPrinter
 from PySide6.QtWidgets import (
     QComboBox,
@@ -37,8 +39,20 @@ _SEVERITY_COLOR = {
 }
 
 
+def export_report_pdf(html: str, path: str | Path) -> None:
+    """Сохранить HTML-отчёт в PDF через Qt (без внешних зависимостей)."""
+    printer = QPrinter(QPrinter.PrinterMode.HighResolution)
+    printer.setOutputFormat(QPrinter.OutputFormat.PdfFormat)
+    printer.setOutputFileName(str(path))
+    printer.setPageSize(QPageSize(QPageSize.PageSizeId.A4))
+    printer.setPageOrientation(QPageLayout.Orientation.Landscape)
+    doc = QTextDocument()
+    doc.setHtml(html)
+    doc.print_(printer)
+
+
 class ReportsView(QWidget):
-    """Валидация проекта и табличные отчёты (CSV / печать)."""
+    """Валидация проекта и табличные отчёты (CSV / PDF / печать)."""
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -78,12 +92,15 @@ class ReportsView(QWidget):
             "report", "Сформировать отчёт", reports_card, role="primary"
         )
         self._btn_csv = icon_action_button("csv", "Экспорт отчёта в CSV…", reports_card)
+        self._btn_pdf = icon_action_button("pdf", "Экспорт отчёта в PDF…", reports_card)
         self._btn_print = icon_action_button("print", "Печать отчёта…", reports_card)
         self._btn_build.clicked.connect(self.build_report)
         self._btn_csv.clicked.connect(self.export_csv)
+        self._btn_pdf.clicked.connect(self.export_pdf)
         self._btn_print.clicked.connect(self.print_report)
         reports_card.add_action(self._btn_build)
         reports_card.add_action(self._btn_csv)
+        reports_card.add_action(self._btn_pdf)
         reports_card.add_action(self._btn_print)
 
         body = QWidget(reports_card)
@@ -184,6 +201,31 @@ class ReportsView(QWidget):
             return
         QMessageBox.information(self, "Экспорт", f"Сохранено:\n{path}")
 
+    def export_pdf(self) -> None:
+        if self._current_report is None:
+            self.build_report()
+        if self._current_report is None:
+            return
+        suggested = f"{self._current_report.kind.value}.pdf"
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Экспорт отчёта PDF",
+            suggested,
+            "PDF (*.pdf);;Все файлы (*.*)",
+        )
+        if not path:
+            return
+        if not path.lower().endswith(".pdf"):
+            path += ".pdf"
+        name = self._snapshot.meta.name if self._snapshot else ""
+        html = reports_svc.report_to_html(self._current_report, project_name=name)
+        try:
+            export_report_pdf(html, path)
+        except Exception as e:
+            QMessageBox.critical(self, "Экспорт", str(e))
+            return
+        QMessageBox.information(self, "Экспорт", f"Сохранено:\n{path}")
+
     def print_report(self) -> None:
         if self._current_report is None:
             self.build_report()
@@ -194,6 +236,8 @@ class ReportsView(QWidget):
         doc = QTextDocument()
         doc.setHtml(html)
         printer = QPrinter(QPrinter.PrinterMode.HighResolution)
+        printer.setPageSize(QPageSize(QPageSize.PageSizeId.A4))
+        printer.setPageOrientation(QPageLayout.Orientation.Landscape)
         dialog = QPrintDialog(printer, self)
         dialog.setWindowTitle("Печать отчёта")
         if dialog.exec() != QPrintDialog.DialogCode.Accepted:

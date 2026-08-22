@@ -10,7 +10,7 @@ alwaysApply: true
 - Python / PySide6 / локальный SQLite `.lanproj` (не SQLAlchemy в runtime)
 - UI на русском; план в `PLAN.md`
 - Тема GUI: источник — `Designer/Стиль.css` + `Designer/Палитра.css`; подключение в `landesigner/ui/theme.py` (светлая панель, акцент `#2f7c85`)
-- Sync (этап 6): FastAPI + SQLite-хранилище blob’ов; клиент `RemoteHttpClient`; опционально `pip install -e ".[remote]"`
+- Sync (этап 6): FastAPI + SQLite или PostgreSQL (`LANDESIGNER_DATABASE_URL`); клиент `RemoteHttpClient`; опционально `pip install -e ".[remote]"`
 
 ## Уже сделано (этапы 0–6 + вкладка типов)
 
@@ -33,18 +33,22 @@ alwaysApply: true
 - **План: трассы**: сохранённые полилинии (`FloorPlanRoute`), кнопка «Трасса», Undo, привязка к кабелю + запись длины
 - **Sync 2.0 (часть)**: diff локального/серверного в диалоге конфликта Push; «Проверить соединение» + понятные ошибки 401
 - **CAD UX (план)**: легенда ролей, групповой drag маркеров (Undo одной командой)
+- **Отчёты PDF**: экспорт текущего отчёта в PDF (A4 landscape) рядом с CSV и печатью
+- **PostgreSQL sync**: серверный store поверх `LANDESIGNER_DATABASE_URL`, фабрика `create_project_store`
+- **Docker Compose**: PostgreSQL 16 + sync API (`docker compose up`), `.env.example`
+- **Типы без портов**: ИБП/PDU и прочая инфраструктура — пустой шаблон, кнопка «Без портов»
 
-## На чём остановились (2026-08-21)
+## На чём остановились (2026-08-22)
 
-**Sync auth UX + CAD UX плана.** Дальше по порядку: отчёты PDF / PostgreSQL sync — по запросу.
+**Типы/устройства без портов.** Дальше — по запросу.
+
+## Было (2026-08-22)
+
+**PostgreSQL sync**; **Отчёты PDF**: кнопка на вкладке «Отчёты», CSV / PDF / печать.
 
 ## Было (2026-08-21)
 
-**Sync conflict diff**; **трассы на плане**; **VRF**; групповое перемещение схемы.
-
-## Было (2026-08-21 ранее)
-
-**vSwitch / Port Group**; **Стойка 2.0**.
+**Sync auth UX + CAD UX плана**; Sync conflict diff; трассы на плане; VRF; групповое перемещение схемы.
 
 ## Важно
 

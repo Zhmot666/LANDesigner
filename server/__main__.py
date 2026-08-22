@@ -11,9 +11,18 @@ def main() -> None:
     parser.add_argument(
         "--db",
         default=os.environ.get("LANDESIGNER_SERVER_DB", "data/landesigner_server.db"),
+        help="SQLite-файл (если не задан --database-url / LANDESIGNER_DATABASE_URL)",
+    )
+    parser.add_argument(
+        "--database-url",
+        default=os.environ.get("LANDESIGNER_DATABASE_URL", ""),
+        help="PostgreSQL DSN, напр. postgresql://user:pass@localhost/landesigner",
     )
     args = parser.parse_args()
-    os.environ["LANDESIGNER_SERVER_DB"] = args.db
+    if args.database_url:
+        os.environ["LANDESIGNER_DATABASE_URL"] = args.database_url
+    else:
+        os.environ["LANDESIGNER_SERVER_DB"] = args.db
 
     try:
         import uvicorn
@@ -24,9 +33,9 @@ def main() -> None:
         ) from exc
 
     from server.app import create_app
-    from server.store import ProjectStore
+    from server.store import create_project_store
 
-    app = create_app(ProjectStore(args.db))
+    app = create_app(create_project_store(db_path=args.db, database_url=args.database_url or None))
     uvicorn.run(app, host=args.host, port=args.port)
 
 

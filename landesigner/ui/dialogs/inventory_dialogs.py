@@ -290,12 +290,15 @@ class DeviceTypeDialog(QDialog):
         remove_btn = QPushButton("Удалить группу", self)
         pp24_btn = QPushButton("Патч-панель 24", self)
         pp48_btn = QPushButton("Патч-панель 48", self)
+        no_ports_btn = QPushButton("Без портов", self)
         add_btn.clicked.connect(lambda: self._add_inherited_group_row())
         remove_btn.clicked.connect(lambda: self._remove_group_row())
         pp24_btn.clicked.connect(lambda: self._apply_patch_panel(24))
         pp48_btn.clicked.connect(lambda: self._apply_patch_panel(48))
+        no_ports_btn.clicked.connect(self._clear_port_groups)
         group_btns.addWidget(add_btn)
         group_btns.addWidget(remove_btn)
+        group_btns.addWidget(no_ports_btn)
         group_btns.addWidget(pp24_btn)
         group_btns.addWidget(pp48_btn)
         group_btns.addStretch(1)
@@ -536,6 +539,10 @@ class DeviceTypeDialog(QDialog):
         combo.currentIndexChanged.connect(lambda _=0: self._update_preview())
         return combo
 
+    def _clear_port_groups(self) -> None:
+        self._groups.setRowCount(0)
+        self._update_preview()
+
     def _apply_patch_panel(self, count: int) -> None:
         role_idx = self._role.findData(DeviceRole.PATCH_PANEL.value)
         if role_idx >= 0:
@@ -562,7 +569,7 @@ class DeviceTypeDialog(QDialog):
         self._groups.setCellWidget(row, 0, prefix_edit)
 
         count_spin = QSpinBox(self)
-        count_spin.setRange(1, 256)
+        count_spin.setRange(0, 256)
         count_spin.setValue(int(count))
         count_spin.valueChanged.connect(lambda _=0: self._update_preview())
         self._groups.setCellWidget(row, 1, count_spin)
@@ -595,7 +602,7 @@ class DeviceTypeDialog(QDialog):
         groups = self.port_groups()
         template = build_port_template(groups) if groups else []
         if not template:
-            self._preview.setText("Превью: нет портов")
+            self._preview.setText("Превью: без портов (только CMDB / монтаж в стойке)")
             return
         speeds = sorted({int(p["speed"]) for p in template})
         speed_txt = "/".join(f"{s} Мбит/с" for s in speeds)
