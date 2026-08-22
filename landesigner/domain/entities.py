@@ -14,6 +14,7 @@ from landesigner.domain.enums import (
     PortMode,
     PortSide,
     PortStatus,
+    RackMountFace,
 )
 
 
@@ -100,6 +101,7 @@ class Device:
     rack_id: Optional[UUID] = None
     rack_u: Optional[int] = None  # нижний юнит в шкафу
     rack_u_height: int = 1  # высота в U
+    rack_mount_face: RackMountFace = RackMountFace.FRONT
     host_device_id: Optional[UUID] = None  # гипервизор для VIRTUAL_MACHINE
 
 

@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QMenu,
+    QSizePolicy,
     QTreeWidget,
     QTreeWidgetItem,
     QVBoxLayout,
@@ -16,7 +17,7 @@ from PySide6.QtWidgets import (
 )
 
 from landesigner.domain.entities import ProjectSnapshot
-from landesigner.ui.icons import icon_action_button
+from landesigner.ui.icons import app_icon, icon_action_button
 
 # Цвета из Designer/Палитра.css
 _TEXT_MAIN = QColor("#23313a")
@@ -42,13 +43,24 @@ class SiteTreeView(QWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setObjectName("SiteSidebar")
+        self.setMinimumWidth(280)
+        self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 8, 10)
         layout.setSpacing(6)
 
+        brand_row = QHBoxLayout()
+        brand_row.setContentsMargins(14, 12, 16, 0)
+        brand_row.setSpacing(8)
+        logo = QLabel(self)
+        logo.setPixmap(app_icon().pixmap(28, 28))
+        logo.setFixedSize(28, 28)
+        logo.setScaledContents(True)
+        brand_row.addWidget(logo)
         brand = QLabel("LANDESIGNER", self)
         brand.setObjectName("SidebarTitle")
-        layout.addWidget(brand)
+        brand_row.addWidget(brand, stretch=1)
+        layout.addLayout(brand_row)
         title = QLabel("Площадка", self)
         title.setObjectName("SidebarBrand")
         layout.addWidget(title)
@@ -62,6 +74,8 @@ class SiteTreeView(QWidget):
         self._tree.setAnimated(True)
         self._tree.setIndentation(18)
         self._tree.setUniformRowHeights(True)
+        self._tree.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self._tree.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         pal = self._tree.palette()
         pal.setColor(QPalette.ColorRole.Base, _BG_BASE)
         pal.setColor(QPalette.ColorRole.Text, _TEXT_MAIN)

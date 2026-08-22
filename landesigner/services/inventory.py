@@ -30,6 +30,7 @@ from landesigner.domain.enums import (
     PortMode,
     PortSide,
     PortStatus,
+    RackMountFace,
 )
 
 
@@ -925,6 +926,7 @@ def _apply_vm_host(
     device.rack_id = None
     device.rack_u = None
     device.rack_u_height = 1
+    device.rack_mount_face = RackMountFace.FRONT
     _clear_vm_vnic_mappings(snapshot, device.id)
 
 
@@ -938,6 +940,7 @@ def add_device(
     rack_id: UUID | None = None,
     rack_u: int | None = None,
     rack_u_height: int = 1,
+    rack_mount_face: RackMountFace = RackMountFace.FRONT,
     host_device_id: UUID | None = None,
 ) -> Device:
     site_id = _require_site(snapshot)
@@ -962,6 +965,7 @@ def add_device(
         rack_id=None,
         rack_u=None,
         rack_u_height=1,
+        rack_mount_face=RackMountFace.FRONT,
         host_device_id=None,
     )
     snapshot.devices.append(device)
@@ -984,6 +988,7 @@ def add_device(
             rack_u=rack_u,
             rack_u_height=rack_u_height,
             room_id=room_id,
+            rack_mount_face=rack_mount_face,
         )
     elif room_id is not None:
         device.room_id = room_id
@@ -1001,6 +1006,7 @@ def update_device(
     rack_id: UUID | None = None,
     rack_u: int | None = None,
     rack_u_height: int | None = None,
+    rack_mount_face: RackMountFace | None = None,
     host_device_id: UUID | None = None,
     clear_room: bool = False,
     clear_rack: bool = False,
@@ -1042,6 +1048,7 @@ def update_device(
         device.rack_id = None
         device.rack_u = None
         device.rack_u_height = 1
+        device.rack_mount_face = RackMountFace.FRONT
         return device
 
     if clear_room:
@@ -1049,6 +1056,7 @@ def update_device(
         device.rack_id = None
         device.rack_u = None
         device.rack_u_height = 1
+        device.rack_mount_face = RackMountFace.FRONT
         return device
 
     if room_id is not None:
@@ -1060,12 +1068,19 @@ def update_device(
                 device.rack_id = None
                 device.rack_u = None
                 device.rack_u_height = 1
+                device.rack_mount_face = RackMountFace.FRONT
 
     if clear_rack:
         device.rack_id = None
         device.rack_u = None
         device.rack_u_height = 1
-    elif rack_id is not None or rack_u is not None or rack_u_height is not None:
+        device.rack_mount_face = RackMountFace.FRONT
+    elif (
+        rack_id is not None
+        or rack_u is not None
+        or rack_u_height is not None
+        or rack_mount_face is not None
+    ):
         set_device_rack_placement(
             snapshot,
             device_id,
@@ -1074,13 +1089,56 @@ def update_device(
             rack_u_height=(
                 rack_u_height if rack_u_height is not None else device.rack_u_height
             ),
+            rack_mount_face=(
+                rack_mount_face
+                if rack_mount_face is not None
+                else device.rack_mount_face
+            ),
             room_id=device.room_id,
         )
     return device
 
 
-def devices_in_rack(snapshot: ProjectSnapshot, rack_id: UUID) -> list[Device]:
+def normalize_rack_mount_face(face: RackMountFace | str | None) -> RackMountFace:
+    if face is None:
+        return RackMountFace.FRONT
+    if isinstance(face, RackMountFace):
+        return face
+    try:
+        return RackMountFace(str(face))
+    except ValueError:
+        return RackMountFace.FRONT
+
+
+def rack_mount_faces_for(face: RackMountFace) -> frozenset[RackMountFace]:
+    face = normalize_rack_mount_face(face)
+    if face == RackMountFace.FULL:
+        return frozenset({RackMountFace.FRONT, RackMountFace.REAR})
+    return frozenset({face})
+
+
+def rack_mount_faces(device: Device) -> frozenset[RackMountFace]:
+    return rack_mount_faces_for(device.rack_mount_face)
+
+
+def rack_mount_face_label(face: RackMountFace) -> str:
+    if face == RackMountFace.REAR:
+        return "Rear"
+    if face == RackMountFace.FULL:
+        return "Full"
+    return "Front"
+
+
+def devices_in_rack(
+    snapshot: ProjectSnapshot,
+    rack_id: UUID,
+    *,
+    face: RackMountFace | None = None,
+) -> list[Device]:
     devices = [d for d in snapshot.devices if d.rack_id == rack_id]
+    if face is not None:
+        view_face = normalize_rack_mount_face(face)
+        devices = [d for d in devices if view_face in rack_mount_faces(d)]
     devices.sort(
         key=lambda d: (
             d.rack_u if d.rack_u is not None else 10**9,
@@ -1103,15 +1161,18 @@ def rack_placement_label(device: Device) -> str:
     if rng is None:
         return ""
     start, end = rng
-    if start == end:
-        return f"U{start}"
-    return f"U{start}–{end}"
+    u_part = f"U{start}" if start == end else f"U{start}–{end}"
+    face = normalize_rack_mount_face(device.rack_mount_face)
+    if face == RackMountFace.FRONT:
+        return u_part
+    return f"{u_part}, {rack_mount_face_label(face)}"
 
 
 def rack_occupied_units(
     snapshot: ProjectSnapshot,
     rack_id: UUID,
     *,
+    face: RackMountFace | None = None,
     exclude_device_id: UUID | None = None,
 ) -> set[int]:
     used: set[int] = set()
@@ -1121,17 +1182,43 @@ def rack_occupied_units(
         rng = rack_u_range(device)
         if rng is None:
             continue
+        if face is not None and normalize_rack_mount_face(face) not in rack_mount_faces(
+            device
+        ):
+            continue
         start, end = rng
         used.update(range(start, end + 1))
     return used
 
 
-def rack_free_units(snapshot: ProjectSnapshot, rack_id: UUID) -> list[int]:
+def rack_free_units(
+    snapshot: ProjectSnapshot,
+    rack_id: UUID,
+    *,
+    face: RackMountFace = RackMountFace.FRONT,
+) -> list[int]:
     rack = next((r for r in snapshot.racks if r.id == rack_id), None)
     if rack is None:
         return []
-    occupied = rack_occupied_units(snapshot, rack_id)
+    occupied = rack_occupied_units(snapshot, rack_id, face=face)
     return [u for u in range(1, int(rack.units) + 1) if u not in occupied]
+
+
+def rack_occupied_slots(snapshot: ProjectSnapshot, rack_id: UUID) -> int:
+    """Число занятых слотов (U × сторона)."""
+    rack = next((r for r in snapshot.racks if r.id == rack_id), None)
+    if rack is None:
+        return 0
+    slots: set[tuple[int, RackMountFace]] = set()
+    for device in devices_in_rack(snapshot, rack_id):
+        rng = rack_u_range(device)
+        if rng is None:
+            continue
+        start, end = rng
+        for u in range(start, end + 1):
+            for mount_face in rack_mount_faces(device):
+                slots.add((u, mount_face))
+    return len(slots)
 
 
 def rack_side_port_summary(
@@ -1157,6 +1244,7 @@ def validate_rack_placement(
     rack_u: int,
     rack_u_height: int = 1,
     *,
+    rack_mount_face: RackMountFace = RackMountFace.FRONT,
     exclude_device_id: UUID | None = None,
 ) -> None:
     rack = next((r for r in snapshot.racks if r.id == rack_id), None)
@@ -1169,6 +1257,7 @@ def validate_rack_placement(
     end = start + height - 1
     if end > int(rack.units):
         raise ValueError(f"Размещение U{start}–{end} выходит за высоту шкафа ({rack.units}U)")
+    new_faces = rack_mount_faces_for(rack_mount_face)
     for other in devices_in_rack(snapshot, rack_id):
         if exclude_device_id is not None and other.id == exclude_device_id:
             continue
@@ -1176,7 +1265,7 @@ def validate_rack_placement(
         if other_rng is None:
             continue
         o_start, o_end = other_rng
-        if start <= o_end and end >= o_start:
+        if start <= o_end and end >= o_start and new_faces & rack_mount_faces(other):
             raise ValueError(
                 f"Пересечение с «{other.hostname}» ({rack_placement_label(other)})"
             )
@@ -1189,6 +1278,7 @@ def set_device_rack_placement(
     rack_id: UUID | None,
     rack_u: int | None,
     rack_u_height: int = 1,
+    rack_mount_face: RackMountFace | None = None,
     room_id: UUID | None = None,
 ) -> Device:
     device = next((d for d in snapshot.devices if d.id == device_id), None)
@@ -1198,6 +1288,7 @@ def set_device_rack_placement(
         device.rack_id = None
         device.rack_u = None
         device.rack_u_height = 1
+        device.rack_mount_face = RackMountFace.FRONT
         if room_id is not None:
             device.room_id = room_id
         return device
@@ -1206,23 +1297,29 @@ def set_device_rack_placement(
         raise ValueError("Шкаф не найден")
     if room_id is not None and rack.room_id != room_id:
         raise ValueError("Шкаф не принадлежит выбранной комнате")
+    mount_face = normalize_rack_mount_face(
+        rack_mount_face if rack_mount_face is not None else device.rack_mount_face
+    )
     if rack_u is None:
         device.room_id = rack.room_id
         device.rack_id = rack_id
         device.rack_u = None
         device.rack_u_height = 1
+        device.rack_mount_face = mount_face
         return device
     validate_rack_placement(
         snapshot,
         rack_id,
         rack_u,
         rack_u_height,
+        rack_mount_face=mount_face,
         exclude_device_id=device_id,
     )
     device.room_id = rack.room_id
     device.rack_id = rack_id
     device.rack_u = int(rack_u)
     device.rack_u_height = max(1, int(rack_u_height))
+    device.rack_mount_face = mount_face
     return device
 
 

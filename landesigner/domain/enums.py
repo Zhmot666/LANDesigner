@@ -28,6 +28,14 @@ class PortSide(StrEnum):
     REAR = "REAR"
 
 
+class RackMountFace(StrEnum):
+    """Сторона монтажа устройства в шкафу (лицевая / тыльная / на всю глубину)."""
+
+    FRONT = "FRONT"
+    REAR = "REAR"
+    FULL = "FULL"
+
+
 class CableKind(StrEnum):
     COPPER = "COPPER"
     FIBER = "FIBER"
@@ -47,12 +55,24 @@ class CableCategory(StrEnum):
 class DeviceRole(StrEnum):
     SWITCH = "SWITCH"
     ROUTER = "ROUTER"
+    FIREWALL = "FIREWALL"
+    LOAD_BALANCER = "LOAD_BALANCER"
     AP = "AP"
+    CONTROLLER = "CONTROLLER"
     SERVER = "SERVER"
+    STORAGE = "STORAGE"
     HYPERVISOR = "HYPERVISOR"
     VIRTUAL_MACHINE = "VIRTUAL_MACHINE"
     WORKSTATION = "WORKSTATION"
     PATCH_PANEL = "PATCH_PANEL"
+    ODF = "ODF"
+    PDU = "PDU"
+    UPS = "UPS"
+    KVM = "KVM"
+    NVR = "NVR"
+    IP_PHONE = "IP_PHONE"
+    PRINTER = "PRINTER"
+    MODEM = "MODEM"
     OTHER = "OTHER"
 
 

@@ -38,6 +38,7 @@ from landesigner.domain.enums import (
     PortMode,
     PortSide,
     PortStatus,
+    RackMountFace,
 )
 from landesigner.ports.repository import ProjectRepository
 
@@ -436,6 +437,7 @@ class LocalSqliteRepository(ProjectRepository):
         self._ensure_column(con, "lag", "mac", "TEXT NOT NULL DEFAULT ''")
         self._ensure_column(con, "device", "rack_u", "INTEGER")
         self._ensure_column(con, "device", "rack_u_height", "INTEGER NOT NULL DEFAULT 1")
+        self._ensure_column(con, "device", "rack_mount_face", "TEXT NOT NULL DEFAULT 'FRONT'")
         self._ensure_column(con, "device", "host_device_id", "TEXT")
         self._ensure_column(con, "port", "host_port_id", "TEXT")
         self._ensure_column(con, "port", "port_group_id", "TEXT")
@@ -681,7 +683,7 @@ class LocalSqliteRepository(ProjectRepository):
             device_rows = con.execute(
                 f"""
                 SELECT id, site_id, device_type_id, hostname, serial, inventory_tag, role,
-                       room_id, rack_id, rack_u, rack_u_height, host_device_id
+                       room_id, rack_id, rack_u, rack_u_height, rack_mount_face, host_device_id
                 FROM device
                 WHERE site_id IN ({placeholders_sites})
                 """,
@@ -700,8 +702,13 @@ class LocalSqliteRepository(ProjectRepository):
                     rack_id=UUID(r[8]) if r[8] is not None else None,
                     rack_u=int(r[9]) if len(r) > 9 and r[9] is not None else None,
                     rack_u_height=int(r[10]) if len(r) > 10 and r[10] is not None else 1,
+                    rack_mount_face=(
+                        RackMountFace(r[11])
+                        if len(r) > 11 and r[11]
+                        else RackMountFace.FRONT
+                    ),
                     host_device_id=(
-                        UUID(r[11]) if len(r) > 11 and r[11] is not None else None
+                        UUID(r[12]) if len(r) > 12 and r[12] is not None else None
                     ),
                 )
                 for r in device_rows
@@ -1221,9 +1228,9 @@ class LocalSqliteRepository(ProjectRepository):
                     """
                     INSERT INTO device(
                         id, site_id, device_type_id, hostname, serial, inventory_tag, role,
-                        room_id, rack_id, rack_u, rack_u_height, host_device_id
+                        room_id, rack_id, rack_u, rack_u_height, rack_mount_face, host_device_id
                     )
-                    VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         _uuid_str(d.id),
@@ -1237,6 +1244,7 @@ class LocalSqliteRepository(ProjectRepository):
                         _uuid_str(d.rack_id) if d.rack_id is not None else None,
                         int(d.rack_u) if d.rack_u is not None else None,
                         int(d.rack_u_height or 1),
+                        _enum_value(d.rack_mount_face),
                         (
                             _uuid_str(d.host_device_id)
                             if d.host_device_id is not None

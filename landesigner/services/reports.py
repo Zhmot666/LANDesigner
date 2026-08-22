@@ -7,6 +7,7 @@ from enum import StrEnum
 from pathlib import Path
 
 from landesigner.domain.entities import ProjectSnapshot
+from landesigner.domain.enums import RackMountFace
 from landesigner.services import inventory as inv
 from landesigner.ui.labels import (
     cable_category_label,
@@ -313,13 +314,29 @@ def _vrfs_report(snapshot: ProjectSnapshot) -> ReportTable:
     )
 
 
+def _free_unit_ranges(free: list[int]) -> str:
+    if not free:
+        return ""
+    ranges: list[str] = []
+    start = prev = free[0]
+    for u in free[1:]:
+        if u == prev + 1:
+            prev = u
+            continue
+        ranges.append(f"U{start}" if start == prev else f"U{start}–{prev}")
+        start = prev = u
+    ranges.append(f"U{start}" if start == prev else f"U{start}–{prev}")
+    return ", ".join(ranges)
+
+
 def _racks_report(snapshot: ProjectSnapshot) -> ReportTable:
     rooms = {r.id: r for r in snapshot.rooms}
     rows: list[list[str]] = []
     for rack in sorted(snapshot.racks, key=lambda r: r.name.casefold()):
         room = rooms.get(rack.room_id)
-        free = inv.rack_free_units(snapshot, rack.id)
-        used = max(0, int(rack.units) - len(free))
+        used_slots = inv.rack_occupied_slots(snapshot, rack.id)
+        total_slots = max(1, int(rack.units) * 2)
+        free_slots = total_slots - used_slots
         devices = inv.devices_in_rack(snapshot, rack.id)
         device_labels: list[str] = []
         for device in devices:
@@ -329,25 +346,23 @@ def _racks_report(snapshot: ProjectSnapshot) -> ReportTable:
                 label = f"{label} ({place})"
             device_labels.append(label)
         free_txt = ""
-        if free:
-            ranges: list[str] = []
-            start = prev = free[0]
-            for u in free[1:]:
-                if u == prev + 1:
-                    prev = u
-                    continue
-                ranges.append(f"U{start}" if start == prev else f"U{start}–{prev}")
-                start = prev = u
-            ranges.append(f"U{start}" if start == prev else f"U{start}–{prev}")
-            free_txt = ", ".join(ranges)
-        pct = f"{100 * used / rack.units:.0f}%" if rack.units else "—"
+        free_front = inv.rack_free_units(snapshot, rack.id, face=RackMountFace.FRONT)
+        free_rear = inv.rack_free_units(snapshot, rack.id, face=RackMountFace.REAR)
+        if free_front or free_rear:
+            parts: list[str] = []
+            if free_front:
+                parts.append(f"Front: {_free_unit_ranges(free_front)}")
+            if free_rear:
+                parts.append(f"Rear: {_free_unit_ranges(free_rear)}")
+            free_txt = "; ".join(parts)
+        pct = f"{100 * used_slots / total_slots:.0f}%" if total_slots else "—"
         rows.append(
             [
                 rack.name,
                 room.name if room else "",
                 str(rack.units),
-                str(used),
-                str(len(free)),
+                str(used_slots),
+                str(free_slots),
                 pct,
                 str(len(devices)),
                 ", ".join(device_labels) or "—",
@@ -361,8 +376,8 @@ def _racks_report(snapshot: ProjectSnapshot) -> ReportTable:
             "Шкаф",
             "Комната",
             "Всего U",
-            "Занято U",
-            "Свободно U",
+            "Слоты занято",
+            "Слоты свободно",
             "Заполнение",
             "Устройств",
             "Монтаж",

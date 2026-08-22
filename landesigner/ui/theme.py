@@ -66,8 +66,25 @@ QToolTip {
 
 QSplitter::handle {
     background: #d8e0e6;
-    width: 2px;
-    height: 2px;
+}
+
+QSplitter::handle:horizontal {
+    width: 6px;
+    margin: 0 1px;
+}
+
+QSplitter::handle:vertical {
+    height: 6px;
+    margin: 1px 0;
+}
+
+QSplitter::handle:hover {
+    background: #b8c8d0;
+}
+
+QSplitter#mainSplitter::handle:horizontal,
+QSplitter#MainSplitter::handle:horizontal {
+    width: 6px;
 }
 
 QFrame#TopologyCanvas,
@@ -212,7 +229,7 @@ QPushButton#IconDangerButton:disabled {
     font-size: 11px;
     font-weight: 700;
     letter-spacing: 1.2px;
-    padding: 14px 16px 2px 16px;
+    padding: 0;
 }
 
 #SiteSidebar QLabel#SidebarBrand {

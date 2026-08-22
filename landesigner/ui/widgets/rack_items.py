@@ -3,7 +3,7 @@ from __future__ import annotations
 from uuid import UUID
 
 from PySide6.QtCore import QPointF, QRectF, Qt
-from PySide6.QtGui import QBrush, QColor, QFont, QPainter, QPainterPath, QPen
+from PySide6.QtGui import QBrush, QColor, QFont, QFontMetrics, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (
     QGraphicsItem,
     QGraphicsRectItem,
@@ -12,7 +12,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from landesigner.domain.enums import DeviceRole, PortSide
+from landesigner.domain.enums import DeviceRole, PortSide, RackMountFace
+from landesigner.services import inventory as inv
 from landesigner.ui.widgets.topology_items import ROLE_COLORS
 
 U_HEIGHT = 22.0
@@ -64,7 +65,8 @@ class RackDeviceItem(QGraphicsRectItem):
         height_u: int,
         units: int,
         *,
-        face: PortSide = PortSide.FRONT,
+        mount_face: RackMountFace = RackMountFace.FRONT,
+        pp_side: PortSide = PortSide.FRONT,
         side_total: int = 0,
         side_busy: int = 0,
     ) -> None:
@@ -74,7 +76,8 @@ class RackDeviceItem(QGraphicsRectItem):
         self.rack_u = int(rack_u)
         self.height_u = max(1, int(height_u))
         self.units = units
-        self.face = face
+        self.mount_face = inv.normalize_rack_mount_face(mount_face)
+        self.pp_side = pp_side
         self._side_total = max(0, int(side_total))
         self._side_busy = max(0, int(side_busy))
         self._occupied: set[int] = set()
@@ -112,8 +115,8 @@ class RackDeviceItem(QGraphicsRectItem):
     def set_occupied_units(self, occupied: set[int]) -> None:
         self._occupied = set(occupied)
 
-    def set_face_summary(self, face: PortSide, total: int, busy: int) -> None:
-        self.face = face
+    def set_pp_summary(self, pp_side: PortSide, total: int, busy: int) -> None:
+        self.pp_side = pp_side
         self._side_total = max(0, int(total))
         self._side_busy = max(0, int(busy))
         self._update_child_labels()
@@ -121,25 +124,73 @@ class RackDeviceItem(QGraphicsRectItem):
 
     def _build_tooltip(self) -> str:
         parts = [self.hostname, placement_text(self.rack_u, self.height_u)]
+        face = inv.normalize_rack_mount_face(self.mount_face)
+        if face != RackMountFace.FRONT:
+            parts.append(inv.rack_mount_face_label(face))
         if self.role == DeviceRole.PATCH_PANEL and self._side_total:
-            side = "Front" if self.face == PortSide.FRONT else "Rear"
-            parts.append(f"{side}: {self._side_busy}/{self._side_total}")
+            pp_label = "Front" if self.pp_side == PortSide.FRONT else "Rear"
+            parts.append(f"PP {pp_label}: {self._side_busy}/{self._side_total}")
         return " · ".join(parts)
+
+    def _meta_text(self) -> str:
+        meta_parts: list[str] = []
+        face = inv.normalize_rack_mount_face(self.mount_face)
+        if face == RackMountFace.REAR:
+            meta_parts.append("Rear")
+        elif face == RackMountFace.FULL:
+            meta_parts.append("Full")
+        if self.role == DeviceRole.PATCH_PANEL and self._side_total:
+            pp_label = "F" if self.pp_side == PortSide.FRONT else "R"
+            meta_parts.append(f"PP {pp_label} {self._side_busy}/{self._side_total}")
+        elif self.height_u > 1 and not meta_parts:
+            meta_parts.append(f"{self.height_u}U")
+        return " · ".join(meta_parts)
 
     def _update_child_labels(self) -> None:
         self._u_label.setPlainText(placement_text(self.rack_u, self.height_u))
-        meta = ""
-        if self.role == DeviceRole.PATCH_PANEL and self._side_total:
-            side = "F" if self.face == PortSide.FRONT else "R"
-            meta = f"{side} {self._side_busy}/{self._side_total}"
-        elif self.height_u > 1:
-            meta = f"{self.height_u}U"
+        meta = self._meta_text()
         self._meta_label.setPlainText(meta)
 
         h = self.rect().height()
-        self._label.setPos(6, max(1.0, (h - self._label.boundingRect().height()) / 2 - 4))
         u_br = self._u_label.boundingRect()
-        self._u_label.setPos(RACK_INNER_WIDTH - u_br.width() - 6, 2)
+        strip_pad = 10
+        right_pad = 6
+
+        if self.height_u <= 1:
+            row_y = max(0.0, (h - max(self._label.boundingRect().height(), u_br.height())) / 2)
+            self._u_label.setPos(RACK_INNER_WIDTH - u_br.width() - right_pad, row_y)
+
+            meta_w = 0.0
+            if meta:
+                m_br = self._meta_label.boundingRect()
+                meta_w = m_br.width() + 4
+                self._meta_label.setPos(
+                    RACK_INNER_WIDTH - u_br.width() - right_pad - meta_w,
+                    row_y + (u_br.height() - m_br.height()) / 2,
+                )
+                self._meta_label.show()
+            else:
+                self._meta_label.hide()
+
+            host_max_w = max(
+                32.0,
+                RACK_INNER_WIDTH - strip_pad - right_pad - u_br.width() - meta_w - 4,
+            )
+            host_font = self._label.font()
+            host_text = QFontMetrics(host_font).elidedText(
+                self.hostname,
+                Qt.TextElideMode.ElideRight,
+                int(host_max_w),
+            )
+            self._label.setPlainText(host_text)
+            self._label.setTextWidth(-1)
+            self._label.setPos(strip_pad, row_y)
+            return
+
+        self._label.setPlainText(self.hostname)
+        self._label.setTextWidth(RACK_INNER_WIDTH - 56)
+        self._label.setPos(6, max(1.0, (h - self._label.boundingRect().height()) / 2 - 4))
+        self._u_label.setPos(RACK_INNER_WIDTH - u_br.width() - right_pad, 2)
         if meta:
             m_br = self._meta_label.boundingRect()
             self._meta_label.setPos(6, h - m_br.height() - 1)
@@ -213,9 +264,12 @@ class RackDeviceItem(QGraphicsRectItem):
             painter.setPen(QPen(QColor(47, 124, 133, 120), 5.0))
             painter.setBrush(Qt.BrushStyle.NoBrush)
             painter.drawRoundedRect(self.rect().adjusted(-2, -2, 2, 2), 4, 4)
-        if self.role == DeviceRole.PATCH_PANEL:
-            # Маркер стороны (Front слева / Rear справа)
-            strip = QRectF(2, 2, 4, self.rect().height() - 4)
-            if self.face == PortSide.REAR:
-                strip.moveLeft(self.rect().width() - 6)
-            painter.fillRect(strip, QColor("#2f7c85"))
+        face = inv.normalize_rack_mount_face(self.mount_face)
+        strip_h = self.rect().height() - 4
+        if face in {RackMountFace.FRONT, RackMountFace.FULL}:
+            painter.fillRect(QRectF(2, 2, 4, strip_h), QColor("#2f7c85"))
+        if face in {RackMountFace.REAR, RackMountFace.FULL}:
+            painter.fillRect(
+                QRectF(self.rect().width() - 6, 2, 4, strip_h),
+                QColor("#2f7c85"),
+            )

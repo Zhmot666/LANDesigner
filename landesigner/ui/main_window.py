@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QSettings, Qt, QTimer
 from PySide6.QtGui import QAction, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QFileDialog,
@@ -14,11 +14,13 @@ from PySide6.QtWidgets import (
     QTabWidget,
     QVBoxLayout,
     QWidget,
+    QSizePolicy,
 )
 
 from landesigner.adapters.local_sqlite.repository import LocalSqliteRepository
 from landesigner.adapters.remote import RemoteHttpClient
 from landesigner.domain.entities import ProjectMeta, ProjectSnapshot, Site, utcnow
+from landesigner.domain.enums import RackMountFace
 from landesigner.ports.remote import RemoteAuthError, RemoteConflictError, RemoteLockConflictError
 from landesigner.services import catalog as catalog_svc
 from landesigner.services import device_type_preset as type_preset_svc
@@ -56,6 +58,7 @@ from landesigner.ui.dialogs.sync_dialogs import (
     load_sync_identity,
     save_sync_settings,
 )
+from landesigner.ui.icons import app_icon
 from landesigner.ui.views.device_types_view import DeviceTypesView
 from landesigner.ui.views.floor_plan_view import FloorPlanView
 from landesigner.ui.views.inventory_view import InventoryView
@@ -65,17 +68,31 @@ from landesigner.ui.views.topology_view import TopologyView
 from landesigner.ui.widgets.device_card import ContextCard
 from landesigner.ui.widgets.site_tree import SiteTreeView, TreeKind
 
+_SIDEBAR_DEFAULT_WIDTH = 380
+_SIDEBAR_MIN_WIDTH = 280
+
+
+class MainWorkspace(QWidget):
+    """Правая часть окна — не блокирует sidebar огромным minimumSizeHint вкладок."""
+
+    def minimumSizeHint(self):  # noqa: N802
+        from PySide6.QtCore import QSize
+
+        return QSize(640, 400)
+
 
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("LanDesigner")
+        self.setWindowIcon(app_icon())
 
         self._active_file: str | None = None
         self._active_snapshot: ProjectSnapshot | None = None
         self._dirty = False
 
         self._service = ProjectService(LocalSqliteRepository())
+        self._sidebar_splitter_ready = False
         self._site_tree = SiteTreeView()
         self._device_types_view = DeviceTypesView()
         self._inventory_view = InventoryView()
@@ -172,11 +189,15 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(0, 0, 12, 10)
         layout.setSpacing(0)
 
-        splitter = QSplitter(central)
-        splitter.setHandleWidth(1)
+        splitter = QSplitter(Qt.Orientation.Horizontal, central)
+        splitter.setObjectName("MainSplitter")
+        splitter.setHandleWidth(6)
+        splitter.setChildrenCollapsible(False)
         splitter.addWidget(self._site_tree)
 
-        right = QWidget(splitter)
+        right = MainWorkspace(splitter)
+        right.setMinimumWidth(0)
+        right.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         right_layout = QVBoxLayout(right)
         right_layout.setContentsMargins(10, 10, 4, 0)
         right_layout.setSpacing(8)
@@ -189,14 +210,16 @@ class MainWindow(QMainWindow):
         tabs = QTabWidget(content)
         tabs.setObjectName("MainTabs")
         tabs.setDocumentMode(True)
+        tabs.setMinimumWidth(0)
+        tabs.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         tabs.addTab(self._topology_view, "Схема")
         tabs.addTab(self._floor_plan_view, "План")
         tabs.addTab(self._rack_view, "Стойка")
-        tabs.addTab(self._device_types_view, "Каталог")
         tabs.addTab(self._inventory_view, "Инвентарь")
         tabs.addTab(self._reports_view, "Отчёты")
+        tabs.addTab(self._device_types_view, "Каталог")
         self._tabs = tabs
-        tabs.setCurrentIndex(4)
+        tabs.setCurrentIndex(3)
         tabs.currentChanged.connect(self._update_edit_actions)
         tabs.currentChanged.connect(self._dock_device_card)
         content.addWidget(tabs)
@@ -211,15 +234,50 @@ class MainWindow(QMainWindow):
         content.setStretchFactor(1, 0)
         right_layout.addWidget(content)
         splitter.addWidget(right)
-        splitter.setSizes([280, 1000])
+        splitter.setCollapsible(0, False)
+        splitter.setCollapsible(1, False)
+        self._main_splitter = splitter
+        # Левая панель — фиксированная ширина (только ручкой); правая растягивается с окном.
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
+        splitter.splitterMoved.connect(self._save_main_splitter_sizes)
 
-        layout.addWidget(splitter)
+        layout.addWidget(splitter, 1)
         self.setCentralWidget(central)
 
         QShortcut(QKeySequence("Ctrl+K"), self, activated=self._focus_search)
         self._dock_device_card()
+
+    def showEvent(self, event) -> None:  # noqa: N802
+        super().showEvent(event)
+        if not self._sidebar_splitter_ready:
+            self._sidebar_splitter_ready = True
+            QTimer.singleShot(0, self._restore_main_splitter_sizes)
+
+    def _restore_main_splitter_sizes(self) -> None:
+        splitter = self._main_splitter
+        total = max(splitter.width(), self.width() - 40, 900)
+        settings = QSettings("LanDesigner", "LanDesigner")
+        raw = settings.value("ui/main_splitter")
+        if isinstance(raw, list) and len(raw) >= 2:
+            try:
+                left = max(_SIDEBAR_MIN_WIDTH, int(raw[0]))
+                if left < _SIDEBAR_DEFAULT_WIDTH:
+                    left = _SIDEBAR_DEFAULT_WIDTH
+                right = max(400, int(raw[1]))
+                scale = total / max(left + right, 1)
+                splitter.setSizes([int(left * scale), int(right * scale)])
+                return
+            except (TypeError, ValueError):
+                pass
+        left = _SIDEBAR_DEFAULT_WIDTH
+        splitter.setSizes([left, max(400, total - left)])
+
+    def _save_main_splitter_sizes(self, *_args) -> None:
+        sizes = self._main_splitter.sizes()
+        if len(sizes) >= 2 and sizes[0] >= _SIDEBAR_MIN_WIDTH:
+            settings = QSettings("LanDesigner", "LanDesigner")
+            settings.setValue("ui/main_splitter", sizes[:2])
 
     def _dock_device_card(self, *_args) -> None:
         """На инвентаре — карточка внизу справа; на схеме/плане — справа от вкладки."""
@@ -1541,11 +1599,8 @@ class MainWindow(QMainWindow):
         dlg = DeviceDialog(snapshot, parent=self)
         if dlg.exec() != DeviceDialog.DialogCode.Accepted:
             return
-        if not dlg.is_valid():
-            QMessageBox.warning(self, "Устройство", "Укажите тип, имя хоста и гипервизор (для ВМ).")
-            return
 
-        type_id, hostname, serial, tag, room_id, rack_id, rack_u, rack_h, host_id = (
+        type_id, hostname, serial, tag, room_id, rack_id, rack_u, rack_h, host_id, rack_face = (
             dlg.values()
         )
         try:
@@ -1559,6 +1614,7 @@ class MainWindow(QMainWindow):
                 rack_id=rack_id,
                 rack_u=rack_u,
                 rack_u_height=rack_h,
+                rack_mount_face=rack_face or RackMountFace.FRONT,
                 host_device_id=host_id,
             )
         except Exception as e:
@@ -1577,11 +1633,8 @@ class MainWindow(QMainWindow):
         dlg = DeviceDialog(snapshot, device=device, parent=self)
         if dlg.exec() != DeviceDialog.DialogCode.Accepted:
             return
-        if not dlg.is_valid():
-            QMessageBox.warning(self, "Устройство", "Укажите имя хоста (для ВМ — и гипервизор).")
-            return
 
-        _, hostname, serial, tag, room_id, rack_id, rack_u, rack_h, host_id = dlg.values()
+        _, hostname, serial, tag, room_id, rack_id, rack_u, rack_h, host_id, rack_face = dlg.values()
         try:
             inventory_service.update_device(
                 snapshot,
@@ -1593,6 +1646,7 @@ class MainWindow(QMainWindow):
                 rack_id=rack_id,
                 rack_u=rack_u,
                 rack_u_height=rack_h,
+                rack_mount_face=rack_face,
                 host_device_id=host_id,
                 clear_room=room_id is None and host_id is None,
                 clear_rack=room_id is not None and rack_id is None,

@@ -26,6 +26,9 @@ dev = [
 where = ["."]
 include = ["landesigner*", "server*"]
 
+[tool.setuptools.package-data]
+landesigner = ["resources/*"]
+
 [tool.ruff]
 line-length = 100
 target-version = "py311"

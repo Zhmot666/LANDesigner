@@ -24,7 +24,7 @@ from PySide6.QtWidgets import (
 )
 
 from landesigner.domain.entities import ProjectSnapshot, Rack
-from landesigner.domain.enums import DeviceRole, PortSide
+from landesigner.domain.enums import DeviceRole, PortSide, RackMountFace
 from landesigner.services import inventory as inv
 from landesigner.ui.commands.rack_commands import (
     MountRackDeviceCommand,
@@ -71,7 +71,7 @@ class RackView(QWidget):
         super().__init__(parent)
         self._snapshot: ProjectSnapshot | None = None
         self._rack_id: UUID | None = None
-        self._face = PortSide.FRONT
+        self._face = RackMountFace.FRONT
         self._items: dict[UUID, RackDeviceItem] = {}
         self._free_highlights: list[FreeUnitHighlight] = []
         self._grid_lines: list[QGraphicsLineItem] = []
@@ -237,22 +237,22 @@ class RackView(QWidget):
     def _on_face_toggled(self, button_id: int, checked: bool) -> None:
         if not checked:
             return
-        self._face = PortSide.FRONT if button_id == 0 else PortSide.REAR
+        self._face = RackMountFace.FRONT if button_id == 0 else RackMountFace.REAR
         self._rebuild()
 
     def _update_status_hint(self) -> None:
         rack = self._current_rack()
         snap = self._snapshot
-        face = "Front" if self._face == PortSide.FRONT else "Rear"
+        face = inv.rack_mount_face_label(self._face)
         if rack is None or snap is None:
             self._status.setText(
-                f"Вид: {face}. Выберите шкаф. ПКМ по устройству — снять / высота U."
+                f"Монтаж: {face}. Выберите шкаф. ПКМ по устройству — снять / высота U."
             )
             return
-        free = inv.rack_free_units(snap, rack.id)
-        used = rack.units - len(free)
+        free = inv.rack_free_units(snap, rack.id, face=self._face)
+        used_on_face = max(0, int(rack.units) - len(free))
         self._status.setText(
-            f"Вид: {face} · {rack.units}U · занято {used}, свободно {len(free)}. "
+            f"Монтаж: {face} · {rack.units}U · занято {used_on_face}, свободно {len(free)}. "
             "Перетащите блок по вертикали; ПКМ — снять со стойки / высота U. "
             "U1 — снизу."
         )
@@ -368,14 +368,19 @@ class RackView(QWidget):
                     self._unit_labels.append(text)
 
             title = self._scene.addText(
-                "Front" if self._face == PortSide.FRONT else "Rear",
+                inv.rack_mount_face_label(self._face),
                 QFont("Segoe UI", 9, QFont.Weight.DemiBold),
             )
             title.setDefaultTextColor(QColor("#2f7c85"))
-            title.setPos(LABEL_WIDTH, max(0.0, FRAME_TOP - 18))
+            title.setPos(4, 0)
             title.setZValue(1)
 
-            for device in inv.devices_in_rack(snap, rack.id):
+            pp_side = (
+                PortSide.FRONT
+                if self._face == RackMountFace.FRONT
+                else PortSide.REAR
+            )
+            for device in inv.devices_in_rack(snap, rack.id, face=self._face):
                 dtype = next((t for t in snap.device_types if t.id == device.device_type_id), None)
                 role = device.role if dtype is None else dtype.role
                 height_u = max(1, int(device.rack_u_height or 1))
@@ -383,7 +388,7 @@ class RackView(QWidget):
                 side_total = side_busy = 0
                 if role == DeviceRole.PATCH_PANEL:
                     side_total, side_busy = inv.rack_side_port_summary(
-                        snap, device.id, self._face
+                        snap, device.id, pp_side
                     )
                 item = RackDeviceItem(
                     device.id,
@@ -392,12 +397,13 @@ class RackView(QWidget):
                     rack_u,
                     height_u,
                     units,
-                    face=self._face,
+                    mount_face=device.rack_mount_face,
+                    pp_side=pp_side,
                     side_total=side_total,
                     side_busy=side_busy,
                 )
                 occupied = inv.rack_occupied_units(
-                    snap, rack.id, exclude_device_id=device.id
+                    snap, rack.id, face=self._face, exclude_device_id=device.id
                 )
                 item.set_occupied_units(occupied)
                 self._scene.addItem(item)
@@ -412,7 +418,7 @@ class RackView(QWidget):
         snap = self._snapshot
         if snap is None:
             return None
-        used = inv.rack_occupied_units(snap, rack.id)
+        used = inv.rack_occupied_units(snap, rack.id, face=self._face)
         height = max(1, int(height_u))
         for candidate in range(1, rack.units - height + 2):
             block = set(range(candidate, candidate + height))
@@ -442,6 +448,7 @@ class RackView(QWidget):
                 rack.id,
                 rack_u,
                 height_u,
+                rack_mount_face=self._face,
                 on_changed=self._after_change,
             )
             self._undo.push(cmd)

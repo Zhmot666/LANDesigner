@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from PySide6.QtCore import QPointF, QRectF, QSize, Qt
 from PySide6.QtGui import QColor, QIcon, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import QApplication, QPushButton, QSizePolicy, QWidget
@@ -264,6 +266,78 @@ _DRAWERS = {
     "floor": _draw_floor,
     "room": _draw_room,
 }
+
+
+def _paint_app_logo(p: QPainter, size: int) -> None:
+    """Логотип: teal-плашка, сеть из трёх узлов и линии «юнитов» стойки."""
+    p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    inset = size * 0.06
+    body = QRectF(inset, inset, size - 2 * inset, size - 2 * inset)
+    radius = size * 0.17
+    p.setPen(Qt.PenStyle.NoPen)
+    p.setBrush(_ACCENT)
+    p.drawRoundedRect(body, radius, radius)
+
+    white = QColor("#ffffff")
+    line_w = max(1.2, size * 0.055)
+    node_r = size * 0.075
+    nodes = (
+        QPointF(size * 0.34, size * 0.36),
+        QPointF(size * 0.66, size * 0.36),
+        QPointF(size * 0.50, size * 0.58),
+    )
+    p.setPen(_pen(white, line_w))
+    p.setBrush(Qt.BrushStyle.NoBrush)
+    p.drawLine(nodes[0], nodes[1])
+    p.drawLine(nodes[0], nodes[2])
+    p.drawLine(nodes[1], nodes[2])
+    p.setBrush(white)
+    p.setPen(Qt.PenStyle.NoPen)
+    for pt in nodes:
+        p.drawEllipse(pt, node_r, node_r)
+
+    p.setPen(_pen(QColor("#e7f2f3"), max(1.0, size * 0.045)))
+    x1, x2 = size * 0.28, size * 0.72
+    for idx in range(3):
+        y = size * 0.74 + idx * size * 0.07
+        p.drawLine(QPointF(x1, y), QPointF(x2, y))
+
+
+def _app_logo_pixmap(logical_px: int) -> QPixmap:
+    dpr = _dpr()
+    px = max(1, int(logical_px * dpr))
+    pm = QPixmap(px, px)
+    pm.setDevicePixelRatio(dpr)
+    pm.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pm)
+    _paint_app_logo(painter, logical_px)
+    painter.end()
+    return pm
+
+
+def app_icon() -> QIcon:
+    icon = QIcon()
+    for size in (16, 24, 32, 48, 64, 128, 256):
+        icon.addPixmap(_app_logo_pixmap(size))
+    return icon
+
+
+def write_app_icon_assets(target_dir: Path | None = None) -> tuple[Path, Path]:
+    """Сгенерировать app.png и app.ico в landesigner/resources/."""
+    out = target_dir or Path(__file__).resolve().parent.parent / "resources"
+    out.mkdir(parents=True, exist_ok=True)
+    png_path = out / "app.png"
+    ico_path = out / "app.ico"
+
+    icon = QIcon()
+    for size in (16, 24, 32, 48, 64, 128, 256):
+        icon.addPixmap(_app_logo_pixmap(size))
+
+    _app_logo_pixmap(256).save(str(png_path), "PNG")
+    if not icon.pixmap(256, 256).save(str(ico_path), "ICO"):
+        # Fallback: одноразмерный ICO из PNG (Windows/Qt).
+        _app_logo_pixmap(256).save(str(ico_path), "ICO")
+    return png_path, ico_path
 
 
 def action_icon(kind: str, color: QColor | None = None) -> QIcon:

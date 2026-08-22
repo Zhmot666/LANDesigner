@@ -41,6 +41,7 @@ from landesigner.domain.enums import (
     PortMode,
     PortSide,
     PortStatus,
+    RackMountFace,
 )
 
 FORMAT_MAGIC = "#LANDESIGNER_CSV"
@@ -262,6 +263,7 @@ def _headers_for(section: str) -> list[str]:
             "rack_id",
             "rack_u",
             "rack_u_height",
+            "rack_mount_face",
             "host_device_id",
         ],
         "vlans": ["id", "site_id", "vlan_id", "name", "description"],
@@ -418,6 +420,7 @@ def _section_rows(snapshot: ProjectSnapshot, name: str) -> list[dict[str, str]]:
                 "rack_id": _opt_uuid(d.rack_id),
                 "rack_u": "" if d.rack_u is None else str(d.rack_u),
                 "rack_u_height": str(d.rack_u_height or 1),
+                "rack_mount_face": d.rack_mount_face.value,
                 "host_device_id": _opt_uuid(d.host_device_id),
             }
             for d in snapshot.devices
@@ -685,6 +688,9 @@ def _load_device(row: dict[str, str]) -> Device:
         rack_id=_opt_parse_uuid(_get(row, "rack_id")),
         rack_u=int(rack_u_raw) if rack_u_raw else None,
         rack_u_height=max(1, _int(row, "rack_u_height", 1)),
+        rack_mount_face=_enum(
+            RackMountFace, _get(row, "rack_mount_face"), RackMountFace.FRONT
+        ),
         host_device_id=_opt_parse_uuid(_get(row, "host_device_id")),
     )
 

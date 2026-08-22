@@ -203,8 +203,8 @@ class InventoryView(QWidget):
         self._ports_card.set_body_widget(self._ports)
         top.addWidget(self._ports_card)
         top.setSizes([420, 780])
-        top.setStretchFactor(0, 0)
-        top.setStretchFactor(1, 1)
+        top.setStretchFactor(0, 1)
+        top.setStretchFactor(1, 2)
         root.addWidget(top)
 
         # Низ: Связи и адреса | карточка устройства

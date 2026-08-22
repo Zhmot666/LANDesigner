@@ -11,10 +11,12 @@ from PySide6.QtWidgets import (
     QDoubleSpinBox,
     QFormLayout,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
     QLineEdit,
     QListWidget,
     QListWidgetItem,
+    QMessageBox,
     QPushButton,
     QSpinBox,
     QTableWidget,
@@ -30,6 +32,7 @@ from landesigner.domain.enums import (
     PortMode,
     PortSide,
     PortStatus,
+    RackMountFace,
 )
 from landesigner.services import inventory as inventory_service
 from landesigner.ui.labels import (
@@ -258,7 +261,8 @@ class DeviceTypeDialog(QDialog):
         self.setWindowTitle(
             "Тип устройства" if device_type is None else "Редактировать тип устройства"
         )
-        self.resize(640, 420)
+        self.setMinimumWidth(760)
+        self.resize(860, 420)
         layout = QVBoxLayout(self)
 
         form = QFormLayout()
@@ -280,7 +284,13 @@ class DeviceTypeDialog(QDialog):
         self._groups.setHorizontalHeaderLabels(
             ["Префикс имени", "Кол-во", "Старт №", "Среда", "Скорость", "Сторона"]
         )
-        self._groups.horizontalHeader().setStretchLastSection(True)
+        groups_header = self._groups.horizontalHeader()
+        groups_header.setStretchLastSection(False)
+        groups_header.setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
+        for col in range(1, 6):
+            groups_header.setSectionResizeMode(col, QHeaderView.ResizeMode.Stretch)
+        # Префикс — узкая колонка; остальное делится поровну.
+        self._groups.setColumnWidth(0, 128)
         self._groups.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self._groups.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
         layout.addWidget(self._groups)
@@ -348,6 +358,10 @@ class DeviceTypeDialog(QDialog):
     def _make_speed_combo(self, selected: int = 1000) -> QComboBox:
         combo = QComboBox(self)
         combo.setEditable(True)
+        combo.setMinimumContentsLength(10)
+        combo.setSizeAdjustPolicy(
+            QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
+        )
         for speed in self._SPEED_PRESETS:
             combo.addItem(f"{speed} Мбит/с", speed)
         idx = combo.findData(int(selected))
@@ -684,6 +698,10 @@ class DeviceDialog(QDialog):
         self._rack_h.setRange(1, 48)
         self._rack_h.setValue(1)
         self._rack_h.setSuffix(" U")
+        self._rack_face = QComboBox(self)
+        self._rack_face.addItem("Front (лицевая)", RackMountFace.FRONT.value)
+        self._rack_face.addItem("Rear (тыльная)", RackMountFace.REAR.value)
+        self._rack_face.addItem("На всю глубину", RackMountFace.FULL.value)
 
         form.addRow("Роль", self._role_filter)
         form.addRow("Тип", self._type)
@@ -695,6 +713,7 @@ class DeviceDialog(QDialog):
         form.addRow("Шкаф", self._rack)
         form.addRow("Юнит (низ)", self._rack_u)
         form.addRow("Высота", self._rack_h)
+        form.addRow("Сторона монтажа", self._rack_face)
         layout.addLayout(form)
 
         if not snapshot.device_types:
@@ -737,6 +756,9 @@ class DeviceDialog(QDialog):
             if device.rack_u is not None:
                 self._rack_u.setValue(int(device.rack_u))
             self._rack_h.setValue(max(1, int(device.rack_u_height or 1)))
+            fidx = self._rack_face.findData(device.rack_mount_face.value)
+            if fidx >= 0:
+                self._rack_face.setCurrentIndex(fidx)
         else:
             self._reload_racks()
 
@@ -748,9 +770,31 @@ class DeviceDialog(QDialog):
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
         )
         _russian_buttons(buttons)
-        buttons.accepted.connect(self.accept)
+        buttons.accepted.connect(self._try_accept)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
+
+    def _validation_message(self) -> str | None:
+        if self._selected_type_id() is None:
+            return "Выберите тип устройства."
+        if not self._hostname.text().strip():
+            return "Укажите имя хоста."
+        if self._is_vm() and self._host.currentData() is None:
+            return "Для виртуальной машины выберите гипервизор."
+        return None
+
+    def _try_accept(self) -> None:
+        msg = self._validation_message()
+        if msg is not None:
+            QMessageBox.warning(self, "Устройство", msg)
+            if not self._hostname.text().strip():
+                self._hostname.setFocus()
+            elif self._selected_type_id() is None:
+                self._type.setFocus()
+            elif self._is_vm():
+                self._host.setFocus()
+            return
+        self.accept()
 
     def _type_label(self, dt: DeviceType) -> str:
         return f"{dt.vendor} {dt.model} ({role_label(dt.role)})"
@@ -802,7 +846,7 @@ class DeviceDialog(QDialog):
     def _sync_vm_fields(self) -> None:
         is_vm = self._is_vm()
         self._host.setEnabled(is_vm)
-        for w in (self._room, self._rack, self._rack_u, self._rack_h):
+        for w in (self._room, self._rack, self._rack_u, self._rack_h, self._rack_face):
             w.setEnabled(not is_vm)
         if not is_vm:
             self._on_rack_changed()
@@ -810,6 +854,7 @@ class DeviceDialog(QDialog):
             self._rack.setEnabled(False)
             self._rack_u.setEnabled(False)
             self._rack_h.setEnabled(False)
+            self._rack_face.setEnabled(False)
 
     def _room_label(self, room) -> str:
         floor = next((f for f in self._snapshot.floors if f.id == room.floor_id), None)
@@ -850,12 +895,14 @@ class DeviceDialog(QDialog):
             self._rack.setEnabled(False)
             self._rack_u.setEnabled(False)
             self._rack_h.setEnabled(False)
+            self._rack_face.setEnabled(False)
             return
         has_rack = self._rack.currentData() is not None
         has_room = self._room.currentData() is not None
         self._rack.setEnabled(has_room)
         self._rack_u.setEnabled(has_rack)
         self._rack_h.setEnabled(has_rack)
+        self._rack_face.setEnabled(has_rack)
         if has_rack:
             rack_id = UUID(str(self._rack.currentData()))
             rack = next((r for r in self._snapshot.racks if r.id == rack_id), None)
@@ -866,7 +913,16 @@ class DeviceDialog(QDialog):
     def values(
         self,
     ) -> tuple[
-        UUID, str, str, str, UUID | None, UUID | None, int | None, int, UUID | None
+        UUID,
+        str,
+        str,
+        str,
+        UUID | None,
+        UUID | None,
+        int | None,
+        int,
+        UUID | None,
+        RackMountFace | None,
     ]:
         type_id = self._selected_type_id()
         if self._is_vm():
@@ -882,6 +938,7 @@ class DeviceDialog(QDialog):
                 None,
                 1,
                 host_id,
+                None,
             )
         room_raw = self._room.currentData()
         rack_raw = self._rack.currentData()
@@ -889,6 +946,12 @@ class DeviceDialog(QDialog):
         rack_id = UUID(str(rack_raw)) if rack_raw is not None else None
         rack_u = int(self._rack_u.value()) if rack_id is not None else None
         rack_h = int(self._rack_h.value()) if rack_id is not None else 1
+        face_raw = self._rack_face.currentData()
+        rack_face = (
+            RackMountFace(str(face_raw))
+            if rack_id is not None and face_raw is not None
+            else None
+        )
         return (
             type_id,  # type: ignore[return-value]
             self._hostname.text().strip(),
@@ -899,6 +962,7 @@ class DeviceDialog(QDialog):
             rack_u,
             rack_h,
             None,
+            rack_face,
         )
 
     def _selected_type_id(self) -> UUID | None:
@@ -916,11 +980,7 @@ class DeviceDialog(QDialog):
         return None
 
     def is_valid(self) -> bool:
-        if self._selected_type_id() is None or not self._hostname.text().strip():
-            return False
-        if self._is_vm() and self._host.currentData() is None:
-            return False
-        return True
+        return self._validation_message() is None
 
 
 class CableDialog(QDialog):

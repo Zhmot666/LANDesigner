@@ -6,7 +6,7 @@ import pytest
 
 from landesigner.adapters.local_sqlite.repository import LocalSqliteRepository
 from landesigner.domain.entities import ProjectMeta, ProjectSnapshot, Site
-from landesigner.domain.enums import CableKind, DeviceRole, PortSide
+from landesigner.domain.enums import CableKind, DeviceRole, PortSide, RackMountFace
 from landesigner.services import catalog as catalog_svc
 from landesigner.services import import_export as csv_io
 from landesigner.services import inventory as inv
@@ -73,6 +73,69 @@ def test_rack_placement_and_unit_conflict():
     assert inv.rack_placement_label(b) == "U12"
     ordered = inv.devices_in_rack(snap, rack.id)
     assert [d.hostname for d in ordered] == ["sw-a", "sw-b"]
+
+
+def test_dual_sided_rack_mount():
+    snap = _base()
+    _, _, room, _, rack = _hierarchy(snap)
+    dtype = inv.add_device_type(
+        snap, vendor="X", model="Y", role=DeviceRole.SWITCH, port_count=1
+    )
+    inv.add_device(
+        snap,
+        dtype.id,
+        "sw-front",
+        room_id=room.id,
+        rack_id=rack.id,
+        rack_u=10,
+        rack_mount_face=RackMountFace.FRONT,
+    )
+    rear = inv.add_device(
+        snap,
+        dtype.id,
+        "pdu-rear",
+        room_id=room.id,
+        rack_id=rack.id,
+        rack_u=10,
+        rack_mount_face=RackMountFace.REAR,
+    )
+    assert rear.rack_mount_face == RackMountFace.REAR
+    assert inv.rack_placement_label(rear) == "U10, Rear"
+    front_devices = inv.devices_in_rack(snap, rack.id, face=RackMountFace.FRONT)
+    rear_devices = inv.devices_in_rack(snap, rack.id, face=RackMountFace.REAR)
+    assert {d.hostname for d in front_devices} == {"sw-front"}
+    assert {d.hostname for d in rear_devices} == {"pdu-rear"}
+
+    with pytest.raises(ValueError, match="Пересечение"):
+        inv.add_device(
+            snap,
+            dtype.id,
+            "sw-conflict",
+            room_id=room.id,
+            rack_id=rack.id,
+            rack_u=10,
+            rack_mount_face=RackMountFace.FRONT,
+        )
+
+    with pytest.raises(ValueError, match="Пересечение"):
+        inv.add_device(
+            snap,
+            dtype.id,
+            "full-depth",
+            room_id=room.id,
+            rack_id=rack.id,
+            rack_u=12,
+            rack_mount_face=RackMountFace.FULL,
+        )
+        inv.add_device(
+            snap,
+            dtype.id,
+            "rear-blocked",
+            room_id=room.id,
+            rack_id=rack.id,
+            rack_u=12,
+            rack_mount_face=RackMountFace.REAR,
+        )
 
 
 def test_devices_for_location_filter():
@@ -237,8 +300,8 @@ def test_rack_free_units_and_side_summary():
     assert report.title == "Шкафы / юниты"
     row = report.rows[0]
     assert row[0] == "Шкаф 1"
-    assert row[report.headers.index("Занято U")] == "3"
-    assert row[report.headers.index("Свободно U")] == "39"
+    assert row[report.headers.index("Слоты занято")] == "3"
+    assert row[report.headers.index("Слоты свободно")] == "81"
     assert "sw1 (U10–11)" in row[report.headers.index("Монтаж")]
 
 
