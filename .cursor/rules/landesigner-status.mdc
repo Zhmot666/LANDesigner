@@ -37,10 +37,11 @@ alwaysApply: true
 - **PostgreSQL sync**: серверный store поверх `LANDESIGNER_DATABASE_URL`, фабрика `create_project_store`
 - **Docker Compose**: PostgreSQL 16 + sync API (`docker compose up`), `.env.example`
 - **Типы без портов**: ИБП/PDU и прочая инфраструктура — пустой шаблон, кнопка «Без портов»
+- **Документация**: `README.md`, `docs/user-guide.md`, `docs/sync-server.md`
 
 ## На чём остановились (2026-08-22)
 
-**Типы/устройства без портов.** Дальше — по запросу.
+**Документация пользователя.** Дальше — по запросу.
 
 ## Было (2026-08-22)
 

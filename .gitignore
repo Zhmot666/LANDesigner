@@ -17,6 +17,7 @@ venv/
 *.lanproj
 *.lanproj.assets/
 *.lanproj.sync.json
+!examples/*.lanproj
 data/
 
 # IDE / OS

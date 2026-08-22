@@ -2,45 +2,78 @@
 
 Десктоп-приложение для проектирования и инвентаризации ЛВС: **LAN CAD + CMDB lite**.
 
+- **CAD:** схема топологии, план этажа, чертёж стойки
+- **CMDB lite:** устройства, порты, кабели, VLAN/IP, VRF, отчёты и проверки
+- **Формат проекта:** локальный файл `.lanproj` (SQLite); опционально — синхронизация через HTTP API
+
+## Требования
+
+- Python **3.11+**
+- Windows / Linux / macOS (GUI на **PySide6**)
+
+## Установка
+
+```bash
+git clone https://github.com/Zhmot666/LANDesigner.git
+cd LANDesigner
+python -m venv .venv
+
+# Windows
+.venv\Scripts\activate
+
+# Linux / macOS
+source .venv/bin/activate
+
+pip install -e .
+```
+
+Опционально — сервер синхронизации и разработка:
+
+```bash
+pip install -e ".[remote]"   # FastAPI, PostgreSQL-клиент
+pip install -e ".[dev]"      # pytest + remote
+```
+
 ## Запуск
 
 ```bash
 python main.py
 ```
 
-## Синхронизация (этап 6)
+## Документация
 
-Локальный `.lanproj` — рабочий offline-кэш. Общий репозиторий — HTTP API.
+| Документ | Описание |
+|----------|----------|
+| [Руководство пользователя](docs/user-guide.md) | Установка, интерфейс, типовые сценарии |
+| [Сервер синхронизации](docs/sync-server.md) | SQLite / PostgreSQL, Docker Compose, Push/Pull |
+| [План разработки](PLAN.md) | Архитектура и этапы (для разработчиков) |
+
+## Быстрый старт
+
+1. **Файл → Новый** — создайте проект `.lanproj`.
+2. В дереве слева добавьте **здание → этаж → комнату → шкаф**.
+3. На вкладке **Каталог** или **Инвентарь** создайте **тип устройства** и **устройство**.
+4. Соедините порты **кабелем**, задайте **VLAN/IP** на вкладке «Инвентарь».
+5. Разместите узлы на **Схеме** и **Плане** этажа.
+6. На вкладке **Отчёты** — проверки и экспорт CSV / PDF.
+
+Подробнее — в [руководстве пользователя](docs/user-guide.md).
+
+Пример проекта: [`examples/demo-office.lanproj`](examples/demo-office.lanproj) (коммутатор, сервер, ИБП без портов, VLAN, кабель).
+
+## Синхронизация (кратко)
+
+Общий репозиторий проектов — HTTP API. Локальный `.lanproj` остаётся offline-кэшем.
 
 ```bash
 pip install -e ".[remote]"
 python -m server --host 127.0.0.1 --port 8765
 ```
 
-**SQLite (по умолчанию):** файл `data/landesigner_server.db` или `--db путь/к/файлу.db`.
+В GUI: **Синхронизация → Настройки сервера** (URL и API-ключ), затем Push / Pull.
 
-**PostgreSQL:**
+PostgreSQL и Docker Compose — см. [docs/sync-server.md](docs/sync-server.md).
 
-```bash
-export LANDESIGNER_DATABASE_URL="postgresql://user:pass@localhost:5432/landesigner"
-python -m server --database-url "$LANDESIGNER_DATABASE_URL"
-```
+## Лицензия и статус
 
-**Docker Compose (PostgreSQL + сервер):**
-
-```bash
-cp .env.example .env
-docker compose up -d --build
-```
-
-- API: `http://127.0.0.1:8765`
-- Ключ по умолчанию: `dev-secret` (переменная `LANDESIGNER_API_KEY` в `.env`)
-- В GUI (**Синхронизация → Настройки сервера**): URL `http://127.0.0.1:8765`, тот же API-ключ
-
-Остановка: `docker compose down`. Данные PostgreSQL сохраняются в volume `pgdata`.
-
-Таблица `projects` создаётся автоматически при старте (UUID, revision, blob `.lanproj`).
-
-Опционально: `LANDESIGNER_API_KEY=секрет` на сервере; тот же ключ в **Синхронизация → Настройки сервера**.
-
-В GUI: клонировать / опубликовать / Push / Pull. Конфликты по `revision`: оставить локальное, принять серверное или принудительный push.
+Версия **0.1.0**, активная разработка. Формат `.lanproj` и CSV — собственный; импорт из NetBox и др. не поддерживается.
