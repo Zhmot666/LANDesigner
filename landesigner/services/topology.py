@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import re
 from uuid import UUID
 
 from landesigner.domain.entities import (
@@ -272,19 +273,43 @@ def endpoint_label(snapshot: ProjectSnapshot, cable_id: UUID) -> str:
     return f"{a} ↔ {b}"
 
 
+_CAB_PURPOSE_RE = re.compile(
+    r"^(CAB-\d+)\s*·\s*([^:]+)\s*:",
+    re.IGNORECASE,
+)
+_CAB_ID_RE = re.compile(r"^(CAB-\d+)\b", re.IGNORECASE)
+
+
+def _link_short_tag(cable) -> str:
+    """Короткий ярлык для схемы: назначение или CAB-NNNN, без длинной автометки."""
+    purpose = (cable.purpose or "").strip()
+    if purpose:
+        return purpose
+    label = (cable.label or "").strip()
+    if not label:
+        return ""
+    match = _CAB_PURPOSE_RE.match(label)
+    if match is not None:
+        tag = match.group(2).strip()
+        return tag or match.group(1)
+    match = _CAB_ID_RE.match(label)
+    if match is not None and ("↔" in label or len(label) > 28):
+        return match.group(1)
+    if "↔" in label or len(label) > 28:
+        return ""
+    return label
+
+
 def link_caption(snapshot: ProjectSnapshot, cable_id: UUID) -> str:
-    """Короткая подпись линии на схеме: метка, порты, VLAN, скорость."""
+    """Короткая подпись линии на схеме: назначение/порты + VLAN/скорость."""
     cable = next((c for c in snapshot.cables if c.id == cable_id), None)
     if cable is None:
         return ""
     port_a = next((p for p in snapshot.ports if p.id == cable.end_a_port_id), None)
     port_b = next((p for p in snapshot.ports if p.id == cable.end_b_port_id), None)
     ends = f"{port_a.name if port_a else '?'} ↔ {port_b.name if port_b else '?'}"
-    lines: list[str] = []
-    label = cable.label.strip() if cable.label else ""
-    if label:
-        lines.append(label)
-    lines.append(ends)
+    tag = _link_short_tag(cable)
+    lines: list[str] = [f"{tag} · {ends}" if tag else ends]
 
     meta_parts: list[str] = []
     if port_a is not None and port_b is not None:
@@ -311,7 +336,6 @@ def link_caption(snapshot: ProjectSnapshot, cable_id: UUID) -> str:
             vlan = next((v for v in snapshot.vlans if v.id == port.access_vlan_id), None)
             if vlan is not None:
                 vlan_bits.append(f"V{vlan.vlan_id}")
-    # Уникальные, сохраняя порядок
     seen: set[str] = set()
     for bit in vlan_bits:
         if bit not in seen:
@@ -319,6 +343,34 @@ def link_caption(snapshot: ProjectSnapshot, cable_id: UUID) -> str:
             meta_parts.append(bit)
     if meta_parts:
         lines.append(" · ".join(meta_parts))
+    return "\n".join(lines)
+
+
+def link_tooltip(snapshot: ProjectSnapshot, cable_id: UUID) -> str:
+    """Полная подсказка по кабелю (метка, концы с hostname, meta)."""
+    cable = next((c for c in snapshot.cables if c.id == cable_id), None)
+    if cable is None:
+        return ""
+    lines: list[str] = []
+    label = (cable.label or "").strip()
+    if label:
+        lines.append(label)
+    purpose = (cable.purpose or "").strip()
+    if purpose and purpose.casefold() not in (label or "").casefold():
+        lines.append(f"Назначение: {purpose}")
+    a = inv.port_endpoint_label(snapshot, cable.end_a_port_id)
+    b = inv.port_endpoint_label(snapshot, cable.end_b_port_id)
+    lines.append(f"{a} ↔ {b}")
+    if cable.color.strip():
+        lines.append(f"Цвет: {cable.color.strip()}")
+    if cable.length_m is not None:
+        lines.append(f"Длина: {cable.length_m:g} м")
+    # Скорость/VLAN — из короткой подписи без дубля портов
+    caption = link_caption(snapshot, cable_id)
+    if "\n" in caption:
+        meta = caption.split("\n", 1)[1].strip()
+        if meta:
+            lines.append(meta)
     return "\n".join(lines)
 
 

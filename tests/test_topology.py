@@ -97,11 +97,29 @@ def test_restore_cable_round_trip():
 def test_link_caption_includes_ports_and_label():
     snap = _snap_with_devices()
     cable = snap.cables[0]
+    # Явная короткая метка без назначения — на схеме видна метка + порты
+    cable.purpose = ""
+    cable.label = "L1"
     caption = topo.link_caption(snap, cable.id)
     assert "L1" in caption
     assert "↔" in caption
     port_a = next(p for p in snap.ports if p.id == cable.end_a_port_id)
     assert port_a.name in caption
+    assert caption.count("↔") == 1
+
+
+def test_link_caption_shortens_auto_label():
+    snap = _snap_with_devices()
+    cable = snap.cables[0]
+    cable.label = "CAB-0001 · WAN: fg-edge / wan1 ↔ ISP-CPE / eth0"
+    cable.purpose = "WAN"
+    caption = topo.link_caption(snap, cable.id)
+    assert "CAB-0001" not in caption
+    assert "WAN" in caption
+    assert "fg-edge" not in caption
+    tip = topo.link_tooltip(snap, cable.id)
+    assert "CAB-0001" in tip
+    assert "fg-edge" in tip or "sw-a" in tip
 
 
 def test_link_caption_includes_vlan_and_speed():

@@ -234,6 +234,7 @@ class CableLinkItem(QGraphicsLineItem):
         node_a: DeviceNodeItem,
         node_b: DeviceNodeItem,
         label: str = "",
+        tooltip: str = "",
     ) -> None:
         super().__init__()
         self.link_id = link_id
@@ -246,6 +247,10 @@ class CableLinkItem(QGraphicsLineItem):
         self._label = QGraphicsTextItem(label, self)
         self._label.setDefaultTextColor(QColor("#667784"))
         self._label.setFont(QFont("Segoe UI", 8))
+        tip = tooltip.strip() or label
+        if tip:
+            self.setToolTip(tip)
+            self._label.setToolTip(tip)
         self._dot_a = QGraphicsEllipseItem(-3, -3, 6, 6, self)
         self._dot_b = QGraphicsEllipseItem(-3, -3, 6, 6, self)
         for dot in (self._dot_a, self._dot_b):
@@ -253,8 +258,11 @@ class CableLinkItem(QGraphicsLineItem):
             dot.setPen(QPen(Qt.PenStyle.NoPen))
         self.update_geometry()
 
-    def set_label(self, label: str) -> None:
+    def set_label(self, label: str, tooltip: str = "") -> None:
         self._label.setPlainText(label)
+        tip = tooltip.strip() or label
+        self.setToolTip(tip)
+        self._label.setToolTip(tip)
         self.update_geometry()
 
     def boundingRect(self) -> QRectF:  # noqa: N802

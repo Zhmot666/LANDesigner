@@ -485,9 +485,13 @@ class TopologyView(QWidget):
                 if a is None or b is None:
                     continue
                 label = ""
+                tip = ""
                 if link.cable_id is not None:
                     label = topo_service.link_caption(snapshot, link.cable_id)
-                item = CableLinkItem(link.id, link.cable_id, a, b, label=label)
+                    tip = topo_service.link_tooltip(snapshot, link.cable_id)
+                item = CableLinkItem(
+                    link.id, link.cable_id, a, b, label=label, tooltip=tip
+                )
                 self._scene.addItem(item)
                 self._links[link.id] = item
 
