@@ -425,7 +425,12 @@ class MainWindow(QMainWindow):
         self._device_card.show_on_topology_requested.connect(self._on_show_on_topology)
         self._device_card.show_on_floor_plan_requested.connect(self._on_show_on_floor_plan)
         self._device_card.show_on_rack_requested.connect(self._on_show_on_rack)
+        self._reports_view.project_modified.connect(self._on_cable_labels_filled)
         self._update_edit_actions()
+
+    def _on_cable_labels_filled(self, count: int) -> None:
+        self._mark_dirty()
+        self.statusBar().showMessage(f"Сгенерировано меток кабелей: {count}")
 
     def _show_device_card(self, device_id: object) -> None:
         if isinstance(device_id, UUID):

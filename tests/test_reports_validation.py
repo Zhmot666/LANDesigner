@@ -33,7 +33,19 @@ def test_validation_finds_duplicate_ip_and_cable_label():
     snap.ips.append(
         IpAddress(site_id=snap.sites[0].id, address="10.0.0.1", port_id=None)
     )
-    inv.add_cable(snap, pa.id, pb.id, label="", kind=CableKind.COPPER)
+    from landesigner.domain.entities import Cable
+    from landesigner.domain.enums import PortStatus
+
+    snap.cables.append(
+        Cable(
+            site_id=snap.sites[0].id,
+            end_a_port_id=pa.id,
+            end_b_port_id=pb.id,
+            label="",
+        )
+    )
+    pa.status = PortStatus.OCCUPIED
+    pb.status = PortStatus.OCCUPIED
 
     issues = validation_svc.validate_project(snap)
     codes = {i.code for i in issues}

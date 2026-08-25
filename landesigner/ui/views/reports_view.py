@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor, QPageLayout, QPageSize, QTextDocument
 from PySide6.QtPrintSupport import QPrintDialog, QPrinter
 from PySide6.QtWidgets import (
@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
 )
 
 from landesigner.domain.entities import ProjectSnapshot
+from landesigner.services import cable_labels as cable_label_service
 from landesigner.services import reports as reports_svc
 from landesigner.services import validation as validation_svc
 from landesigner.services.reports import ReportKind
@@ -54,6 +55,8 @@ def export_report_pdf(html: str, path: str | Path) -> None:
 class ReportsView(QWidget):
     """Валидация проекта и табличные отчёты (CSV / PDF / печать)."""
 
+    project_modified = Signal(int)
+
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._snapshot: ProjectSnapshot | None = None
@@ -74,8 +77,13 @@ class ReportsView(QWidget):
         self._btn_validate = icon_action_button(
             "check", "Проверить проект", issues_card, role="primary"
         )
+        self._btn_fill_labels = icon_action_button(
+            "add", "Заполнить метки кабелей", issues_card
+        )
         self._btn_validate.clicked.connect(self.run_validation)
+        self._btn_fill_labels.clicked.connect(self.fill_cable_labels)
         issues_card.add_action(self._btn_validate)
+        issues_card.add_action(self._btn_fill_labels)
         self._issues_table = QTableWidget(issues_card)
         tune_table(self._issues_table)
         self._issues_table.setColumnCount(3)
@@ -166,6 +174,26 @@ class ReportsView(QWidget):
                 self._issues_table.setItem(row, 1, check)
                 self._issues_table.setItem(row, 2, make_item(issue.message))
         self._issues_table.resizeColumnsToContents()
+
+    def fill_cable_labels(self) -> None:
+        if self._snapshot is None:
+            QMessageBox.information(self, "Метки кабелей", "Сначала откройте проект.")
+            return
+        count = cable_label_service.fill_missing_cable_labels(self._snapshot)
+        if count <= 0:
+            QMessageBox.information(
+                self,
+                "Метки кабелей",
+                "Все кабели уже имеют метки.",
+            )
+            return
+        self.project_modified.emit(count)
+        self.run_validation()
+        QMessageBox.information(
+            self,
+            "Метки кабелей",
+            f"Сгенерировано меток: {count}.",
+        )
 
     def build_report(self) -> None:
         if self._snapshot is None:

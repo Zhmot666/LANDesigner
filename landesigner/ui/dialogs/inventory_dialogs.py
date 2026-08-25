@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
     QSpinBox,
     QTableWidget,
     QVBoxLayout,
+    QWidget,
 )
 
 from landesigner.domain.entities import Cable, Device, DeviceType, IpAddress, ProjectSnapshot
@@ -35,6 +36,7 @@ from landesigner.domain.enums import (
     RackMountFace,
 )
 from landesigner.services import inventory as inventory_service
+from landesigner.services import cable_labels as cable_label_service
 from landesigner.ui.labels import (
     CABLE_CATEGORY_RU,
     CABLE_KIND_RU,
@@ -1011,6 +1013,8 @@ class CableDialog(QDialog):
         self._device_b = QComboBox(self)
         self._port_b = QComboBox(self)
         self._label = QLineEdit(self)
+        self._label_manual = False
+        self._purpose_manual = False
         self._kind = QComboBox(self)
         self._category = QComboBox(self)
         self._color = QLineEdit(self)
@@ -1038,7 +1042,14 @@ class CableDialog(QDialog):
         form.addRow("Порт A", self._port_a)
         form.addRow("Устройство B", self._device_b)
         form.addRow("Порт B", self._port_b)
-        form.addRow("Метка", self._label)
+        label_row = QWidget(self)
+        label_row_layout = QHBoxLayout(label_row)
+        label_row_layout.setContentsMargins(0, 0, 0, 0)
+        label_row_layout.addWidget(self._label, stretch=1)
+        self._btn_generate = QPushButton("Сгенерировать…", label_row)
+        self._btn_generate.clicked.connect(self._generate_labels)
+        label_row_layout.addWidget(self._btn_generate)
+        form.addRow("Метка", label_row)
         form.addRow("Вид", self._kind)
         form.addRow("Категория", self._category)
         form.addRow("Цвет", self._color)
@@ -1049,6 +1060,9 @@ class CableDialog(QDialog):
         self._hint = QLabel(self)
         self._hint.setWordWrap(True)
         layout.addWidget(self._hint)
+
+        self._label.textEdited.connect(lambda _text: setattr(self, "_label_manual", True))
+        self._purpose.textEdited.connect(lambda _text: setattr(self, "_purpose_manual", True))
 
         if cable is not None:
             self._device_a.setEnabled(False)
@@ -1061,6 +1075,8 @@ class CableDialog(QDialog):
             self._device_b.currentIndexChanged.connect(self._reload_ports_b)
             self._port_a.currentIndexChanged.connect(self._guess_kind)
             self._port_b.currentIndexChanged.connect(self._guess_kind)
+            self._port_a.currentIndexChanged.connect(lambda _=0: self._auto_suggest_fields())
+            self._port_b.currentIndexChanged.connect(lambda _=0: self._auto_suggest_fields())
             self._kind.currentIndexChanged.connect(self._sync_category_hint)
             if port_a_id is not None:
                 port = next((p for p in snapshot.ports if p.id == port_a_id), None)
@@ -1099,6 +1115,7 @@ class CableDialog(QDialog):
                     "Порт A выбран с патч-панели — укажите второй конец кабеля."
                 )
             self._guess_kind()
+            self._auto_suggest_fields()
 
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
@@ -1193,6 +1210,49 @@ class CableDialog(QDialog):
                 self._kind.setCurrentIndex(idx)
                 self._kind.blockSignals(False)
         self._sync_category_hint()
+        self._auto_suggest_fields()
+
+    def _selected_port_ids(self) -> tuple[UUID | None, UUID | None]:
+        a_raw = self._port_a.currentData()
+        b_raw = self._port_b.currentData()
+        a_id = UUID(str(a_raw)) if a_raw is not None else None
+        b_id = UUID(str(b_raw)) if b_raw is not None else None
+        return a_id, b_id
+
+    def _auto_suggest_fields(self) -> None:
+        if self._cable is not None:
+            return
+        port_a_id, port_b_id = self._selected_port_ids()
+        if port_a_id is None or port_b_id is None:
+            return
+        label, purpose = cable_label_service.suggest_cable_fields(
+            self._snapshot, port_a_id, port_b_id
+        )
+        self._label.blockSignals(True)
+        self._purpose.blockSignals(True)
+        if not self._label_manual:
+            self._label.setText(label)
+        if not self._purpose_manual:
+            self._purpose.setText(purpose)
+        self._label.blockSignals(False)
+        self._purpose.blockSignals(False)
+
+    def _generate_labels(self) -> None:
+        port_a_id, port_b_id = self._selected_port_ids()
+        if port_a_id is None or port_b_id is None:
+            QMessageBox.information(
+                self,
+                "Метка кабеля",
+                "Сначала выберите оба порта.",
+            )
+            return
+        label, purpose = cable_label_service.suggest_cable_fields(
+            self._snapshot, port_a_id, port_b_id
+        )
+        self._label_manual = False
+        self._purpose_manual = False
+        self._label.setText(label)
+        self._purpose.setText(purpose)
 
     def _sync_category_hint(self) -> None:
         kind_raw = self._kind.currentData()

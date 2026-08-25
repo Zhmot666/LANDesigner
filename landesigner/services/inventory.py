@@ -1764,16 +1764,21 @@ def add_cable(
         _release_port(snapshot, end_a_port_id)
         raise
 
+    from landesigner.services import cable_labels as cable_lbl
+
+    label_out, purpose_out = cable_lbl.apply_if_missing(
+        snapshot, end_a_port_id, end_b_port_id, label, purpose
+    )
     cable = Cable(
         site_id=site_id,
-        label=label.strip(),
+        label=label_out,
         kind=kind_enum,
         category=category_enum,
         length_m=length_m if length_m and length_m > 0 else None,
         end_a_port_id=end_a_port_id,
         end_b_port_id=end_b_port_id,
         color=(color or "").strip(),
-        purpose=(purpose or "").strip(),
+        purpose=purpose_out,
     )
     snapshot.cables.append(cable)
     return cable
