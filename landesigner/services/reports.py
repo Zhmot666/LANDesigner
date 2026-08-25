@@ -25,6 +25,7 @@ class ReportKind(StrEnum):
     VLANS = "vlans"
     VRFS = "vrfs"
     RACKS = "racks"
+    GXP_IQ = "gxp_iq"
 
 
 REPORT_TITLES: dict[ReportKind, str] = {
@@ -34,6 +35,7 @@ REPORT_TITLES: dict[ReportKind, str] = {
     ReportKind.VLANS: "VLAN map",
     ReportKind.VRFS: "VRF / IP scope",
     ReportKind.RACKS: "Шкафы / юниты",
+    ReportKind.GXP_IQ: "GxP Infrastructure IQ (черновик)",
 }
 
 
@@ -58,6 +60,8 @@ def build_report(snapshot: ProjectSnapshot, kind: ReportKind) -> ReportTable:
         return _vrfs_report(snapshot)
     if kind == ReportKind.RACKS:
         return _racks_report(snapshot)
+    if kind == ReportKind.GXP_IQ:
+        return _gxp_iq_report(snapshot)
     raise ValueError(f"Неизвестный отчёт: {kind}")
 
 
@@ -382,6 +386,53 @@ def _racks_report(snapshot: ProjectSnapshot) -> ReportTable:
             "Устройств",
             "Монтаж",
             "Свободные юниты",
+        ],
+        rows,
+    )
+
+
+def _gxp_iq_report(snapshot: ProjectSnapshot) -> ReportTable:
+    from landesigner.services import gxp_iq as gxp
+
+    results = gxp.run_gxp_iq(snapshot)
+    summary = gxp.iq_summary(results)
+    overall = "PASS" if gxp.iq_overall_pass(results) else "FAIL"
+    rows: list[list[str]] = [
+        [
+            "—",
+            "Итог",
+            f"GxP Infrastructure IQ — {overall}",
+            (
+                f"Черновик чек-листа квалификации инфраструктуры перед CSV. "
+                f"PASS {summary['pass']} · FAIL {summary['fail']} · "
+                f"N/A {summary['na']} · всего {summary['total']}. "
+                f"Не заменяет CSV приложения и не является Part 11 / e-signature."
+            ),
+            overall,
+            f"Проект: {snapshot.meta.name}; revision {snapshot.meta.revision}",
+        ]
+    ]
+    for r in results:
+        rows.append(
+            [
+                r.code,
+                r.category,
+                r.title,
+                r.objective,
+                r.verdict.value,
+                r.evidence,
+            ]
+        )
+    return ReportTable(
+        ReportKind.GXP_IQ,
+        REPORT_TITLES[ReportKind.GXP_IQ],
+        [
+            "Код",
+            "Категория",
+            "Тест",
+            "Цель / критерий",
+            "Вердикт",
+            "Доказательство / отклонения",
         ],
         rows,
     )

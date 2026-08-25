@@ -46,6 +46,7 @@ python main.py
 |----------|----------|
 | [Руководство пользователя](docs/user-guide.md) | Установка, интерфейс, типовые сценарии |
 | [Сервер синхронизации](docs/sync-server.md) | SQLite / PostgreSQL, Docker Compose, Push/Pull |
+| [Changelog](CHANGELOG.md) | История заметных изменений |
 | [План разработки](PLAN.md) | Архитектура и этапы (для разработчиков) |
 
 ## Быстрый старт
