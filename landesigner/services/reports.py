@@ -26,6 +26,7 @@ class ReportKind(StrEnum):
     VRFS = "vrfs"
     RACKS = "racks"
     GXP_IQ = "gxp_iq"
+    CHANGE_LOG = "change_log"
 
 
 REPORT_TITLES: dict[ReportKind, str] = {
@@ -36,6 +37,7 @@ REPORT_TITLES: dict[ReportKind, str] = {
     ReportKind.VRFS: "VRF / IP scope",
     ReportKind.RACKS: "Шкафы / юниты",
     ReportKind.GXP_IQ: "GxP Infrastructure IQ (черновик)",
+    ReportKind.CHANGE_LOG: "Журнал изменений",
 }
 
 
@@ -62,6 +64,8 @@ def build_report(snapshot: ProjectSnapshot, kind: ReportKind) -> ReportTable:
         return _racks_report(snapshot)
     if kind == ReportKind.GXP_IQ:
         return _gxp_iq_report(snapshot)
+    if kind == ReportKind.CHANGE_LOG:
+        return _change_log_report(snapshot)
     raise ValueError(f"Неизвестный отчёт: {kind}")
 
 
@@ -434,5 +438,31 @@ def _gxp_iq_report(snapshot: ProjectSnapshot) -> ReportTable:
             "Вердикт",
             "Доказательство / отклонения",
         ],
+        rows,
+    )
+
+
+def _change_log_report(snapshot: ProjectSnapshot) -> ReportTable:
+    from landesigner.services import change_journal as journal
+
+    rows: list[list[str]] = []
+    for entry in journal.entries_newest_first(snapshot):
+        obj = entry.entity_kind
+        if entry.entity_id is not None:
+            short = str(entry.entity_id)[:8]
+            obj = f"{obj}:{short}" if obj else short
+        rows.append(
+            [
+                entry.created_at.strftime("%Y-%m-%d %H:%M:%S"),
+                entry.actor,
+                entry.action,
+                entry.detail,
+                obj or "",
+            ]
+        )
+    return ReportTable(
+        ReportKind.CHANGE_LOG,
+        REPORT_TITLES[ReportKind.CHANGE_LOG],
+        ["Когда (UTC)", "Кто", "Действие", "Подробности", "Объект"],
         rows,
     )

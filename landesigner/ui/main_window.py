@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from uuid import UUID
 
 from PySide6.QtCore import QSettings, Qt, QTimer
@@ -26,10 +27,12 @@ from landesigner.services import catalog as catalog_svc
 from landesigner.services import device_type_preset as type_preset_svc
 from landesigner.services import import_export as csv_io
 from landesigner.services import inventory as inventory_service
+from landesigner.services import change_journal as change_journal_svc
 from landesigner.services import snapshots as snap_svc
 from landesigner.services import sync as sync_svc
 from landesigner.services.project import ProjectService
 from landesigner.ui.dialogs.about_dialogs import AboutDialog, ChangelogDialog
+from landesigner.ui.dialogs.change_journal_dialog import ChangeJournalDialog
 from landesigner.ui.dialogs.catalog_dialog import DeviceTypeCatalogDialog
 from landesigner.ui.dialogs.inventory_dialogs import (
     BuildingDialog,
@@ -147,7 +150,10 @@ class MainWindow(QMainWindow):
         file_menu.addSeparator()
         action_project_props = QAction("Свойства проекта…", self)
         file_menu.addAction(action_project_props)
+        action_change_journal = QAction("Журнал изменений…", self)
+        file_menu.addAction(action_change_journal)
         action_project_props.triggered.connect(self._on_edit_project)
+        action_change_journal.triggered.connect(self._on_show_change_journal)
         file_menu.addSeparator()
         file_menu.addAction(action_exit)
         action_exit.triggered.connect(self.close)
@@ -438,7 +444,7 @@ class MainWindow(QMainWindow):
         self._update_edit_actions()
 
     def _on_cable_labels_filled(self, count: int) -> None:
-        self._mark_dirty()
+        self._mark_dirty(action="Заполнены метки кабелей", detail=f"{count} шт.")
         self.statusBar().showMessage(f"Сгенерировано меток кабелей: {count}")
 
     def _show_device_card(self, device_id: object) -> None:
@@ -473,7 +479,7 @@ class MainWindow(QMainWindow):
             site.name = site_name
             site.address = address
             site.notes = notes
-        self._mark_dirty()
+        self._mark_dirty(action="Изменены свойства проекта")
         self._device_card.show_project()
         self.statusBar().showMessage(f"Проект: {project_name}")
 
@@ -683,7 +689,7 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "Трасса", str(e))
             return
-        self._mark_dirty()
+        self._mark_dirty(action="Добавлена трасса на плане")
         self._floor_plan_view.refresh()
         self.statusBar().showMessage(f"Длина кабеля обновлена: {length_m:.2f} м")
 
@@ -832,7 +838,23 @@ class MainWindow(QMainWindow):
                 title += " *"
         self.setWindowTitle(title)
 
-    def _mark_dirty(self, *, refresh: bool = True) -> None:
+    def _mark_dirty(
+        self,
+        *,
+        refresh: bool = True,
+        action: str | None = None,
+        detail: str = "",
+        entity_kind: str = "",
+        entity_id: UUID | None = None,
+    ) -> None:
+        if action and self._active_snapshot is not None:
+            change_journal_svc.append_change(
+                self._active_snapshot,
+                action,
+                detail=detail,
+                entity_kind=entity_kind,
+                entity_id=entity_id,
+            )
         self._dirty = True
         if refresh:
             self._refresh_ui()
@@ -842,6 +864,12 @@ class MainWindow(QMainWindow):
                 title += f" — {self._active_snapshot.meta.name} *"
             self.setWindowTitle(title)
         self._update_sync_status()
+
+    def _on_show_change_journal(self) -> None:
+        snapshot = self._require_snapshot()
+        if snapshot is None:
+            return
+        ChangeJournalDialog(snapshot, parent=self).exec()
 
     def _update_sync_status(self) -> None:
         self.statusBar().showMessage(
@@ -963,6 +991,13 @@ class MainWindow(QMainWindow):
         meta = ProjectMeta(name="Новый проект")
         site = Site(project_id=meta.id, name="Площадка")
         self._active_snapshot = ProjectSnapshot(meta=meta, sites=[site])
+        change_journal_svc.append_change(
+            self._active_snapshot,
+            "Создан новый проект",
+            detail=meta.name,
+            entity_kind="project",
+            entity_id=meta.id,
+        )
         self._dirty = True
         self._refresh_ui()
         self._update_sync_status()
@@ -1000,6 +1035,13 @@ class MainWindow(QMainWindow):
 
         snapshot.meta.updated_at = utcnow()
         snapshot.meta.revision += 1
+        change_journal_svc.append_change(
+            snapshot,
+            "Сохранение проекта",
+            detail=f"revision {snapshot.meta.revision}",
+            entity_kind="project",
+            entity_id=snapshot.meta.id,
+        )
 
         try:
             self._service.save_project(file_path=file_path, snapshot=snapshot)
@@ -1290,6 +1332,13 @@ class MainWindow(QMainWindow):
 
         try:
             imported = csv_io.import_snapshot(file_path)
+            change_journal_svc.append_change(
+                imported,
+                "Импорт CSV",
+                detail=Path(file_path).name,
+                entity_kind="project",
+                entity_id=imported.meta.id,
+            )
             self._active_snapshot = imported
             # Импорт в текущую сессию: .lanproj-путь сохраняем, но помечаем dirty.
             self._dirty = True
@@ -1316,7 +1365,12 @@ class MainWindow(QMainWindow):
                 building = inventory_service.add_building(
                     snapshot, name, address=address, notes=notes
                 )
-                self._mark_dirty()
+                self._mark_dirty(
+                    action="Добавлено здание",
+                    detail=building.name,
+                    entity_kind="building",
+                    entity_id=building.id,
+                )
                 self._device_card.show_building(building.id)
                 return
             elif kind == TreeKind.FLOOR:
@@ -1351,7 +1405,7 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Ошибка", str(e))
             return
 
-        self._mark_dirty()
+        self._mark_dirty(action=f"Добавлен объект: {kind.value}")
 
     def _on_tree_edit(self, kind: TreeKind, obj_id: UUID) -> None:
         snapshot = self._require_snapshot()
@@ -1378,7 +1432,12 @@ class MainWindow(QMainWindow):
                 inventory_service.update_building(
                     snapshot, obj_id, name=name, address=address, notes=notes
                 )
-                self._mark_dirty()
+                self._mark_dirty(
+                    action="Изменено здание",
+                    detail=name,
+                    entity_kind="building",
+                    entity_id=obj_id,
+                )
                 self._device_card.show_building(obj_id)
                 return
             elif kind == TreeKind.FLOOR:
@@ -1421,7 +1480,7 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Ошибка", str(e))
             return
 
-        self._mark_dirty()
+        self._mark_dirty(action=f"Изменён объект: {kind.value}", entity_id=obj_id)
 
     def _on_tree_delete(self, kind: TreeKind, obj_id: UUID) -> None:
         snapshot = self._require_snapshot()
@@ -1470,7 +1529,11 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Ошибка", str(e))
             return
 
-        self._mark_dirty()
+        self._mark_dirty(
+            action=f"Удалён объект: {kind.value}",
+            detail=label or "",
+            entity_id=obj_id,
+        )
 
     def _on_add_device_type(self) -> None:
         snapshot = self._require_snapshot()
@@ -1487,7 +1550,7 @@ class MainWindow(QMainWindow):
             role=role,
             port_groups=port_groups,
         )
-        self._mark_dirty()
+        self._mark_dirty(action="Добавлен тип устройства")
         port_count = len(dtype.port_template)
         if port_count:
             speeds = sorted({int(p["speed"]) for p in dtype.port_template})
@@ -1516,7 +1579,7 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "Каталог", str(e))
             return
-        self._mark_dirty()
+        self._mark_dirty(action="Тип устройства из каталога")
         self.statusBar().showMessage(
             f"Из каталога: {dtype.vendor} {dtype.model} ({len(dtype.port_template)} порт.)"
         )
@@ -1551,7 +1614,7 @@ class MainWindow(QMainWindow):
             role=role,
             port_groups=port_groups,
         )
-        self._mark_dirty()
+        self._mark_dirty(action="Изменён тип устройства")
         self.statusBar().showMessage(f"Тип обновлён: {vendor} {model}")
 
     def _on_delete_device_type(self, type_id: UUID) -> None:
@@ -1584,7 +1647,7 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "Тип устройства", str(e))
             return
-        self._mark_dirty()
+        self._mark_dirty(action="Удалён тип устройства")
         self.statusBar().showMessage(
             f"Удалён тип: {device_type.vendor} {device_type.model}"
         )
@@ -1631,7 +1694,7 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Импорт пресета", str(e))
             return
         if result.added or result.updated:
-            self._mark_dirty()
+            self._mark_dirty(action="Импорт пресета типов")
         QMessageBox.information(
             self,
             "Импорт пресета",
@@ -1675,7 +1738,7 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "Ошибка", str(e))
             return
-        self._mark_dirty()
+        self._mark_dirty(action="Добавлено устройство")
 
     def _on_edit_device(self, device_id: UUID) -> None:
         snapshot = self._require_snapshot()
@@ -1709,7 +1772,7 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "Ошибка", str(e))
             return
-        self._mark_dirty()
+        self._mark_dirty(action="Изменено устройство")
 
     def _on_delete_device(self, device_id: UUID) -> None:
         snapshot = self._require_snapshot()
@@ -1727,7 +1790,7 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "Удаление", str(e))
             return
-        self._mark_dirty()
+        self._mark_dirty(action="Удалено устройство")
 
     def _on_add_cable(self) -> None:
         snapshot = self._require_snapshot()
@@ -1762,7 +1825,7 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "Кабель", str(e))
             return
-        self._mark_dirty()
+        self._mark_dirty(action="Добавлен кабель")
         self.statusBar().showMessage(
             f"Кабель: {inventory_service.port_endpoint_label(snapshot, cable.end_a_port_id)} ↔ "
             f"{inventory_service.port_endpoint_label(snapshot, cable.end_b_port_id)}"
@@ -1794,7 +1857,7 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "Кабель", str(e))
             return
-        self._mark_dirty()
+        self._mark_dirty(action="Изменён кабель")
 
     def _on_delete_cable(self, cable_id: UUID) -> None:
         snapshot = self._require_snapshot()
@@ -1808,7 +1871,7 @@ class MainWindow(QMainWindow):
         if answer != QMessageBox.StandardButton.Yes:
             return
         inventory_service.delete_cable(snapshot, cable_id)
-        self._mark_dirty()
+        self._mark_dirty(action="Удалён кабель")
         self.statusBar().showMessage("Кабель удалён")
 
     def _on_patch_matrix(self, device_id: UUID) -> None:
@@ -1853,7 +1916,7 @@ class MainWindow(QMainWindow):
             except Exception as e:
                 QMessageBox.critical(self, "Кабель", str(e))
                 return
-            self._mark_dirty()
+            self._mark_dirty(action="Добавлен кабель с патч-панели")
             dlg.reload()
             self.statusBar().showMessage("Кабель с патч-панели добавлен")
 
@@ -1873,7 +1936,7 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "VLAN", str(e))
             return
-        self._mark_dirty()
+        self._mark_dirty(action="Добавлен VLAN")
         self.statusBar().showMessage(f"Добавлен VLAN {vlan.vlan_id}")
 
     def _on_edit_vlan(self, vlan_uuid: UUID) -> None:
@@ -1904,7 +1967,7 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "VLAN", str(e))
             return
-        self._mark_dirty()
+        self._mark_dirty(action="Изменён VLAN")
 
     def _on_delete_vlan(self, vlan_uuid: UUID) -> None:
         snapshot = self._require_snapshot()
@@ -1918,7 +1981,7 @@ class MainWindow(QMainWindow):
         if answer != QMessageBox.StandardButton.Yes:
             return
         inventory_service.delete_vlan(snapshot, vlan_uuid)
-        self._mark_dirty()
+        self._mark_dirty(action="Удалён VLAN")
 
     def _on_add_vrf(self) -> None:
         snapshot = self._require_snapshot()
@@ -1938,7 +2001,7 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "VRF", str(e))
             return
-        self._mark_dirty()
+        self._mark_dirty(action="Добавлен VRF")
         self.statusBar().showMessage(f"Добавлен VRF {inventory_service.vrf_label(vrf)}")
 
     def _on_edit_vrf(self, vrf_uuid: UUID) -> None:
@@ -1968,7 +2031,7 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "VRF", str(e))
             return
-        self._mark_dirty()
+        self._mark_dirty(action="Изменён VRF")
 
     def _on_delete_vrf(self, vrf_uuid: UUID) -> None:
         snapshot = self._require_snapshot()
@@ -1986,7 +2049,7 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "VRF", str(e))
             return
-        self._mark_dirty()
+        self._mark_dirty(action="Удалён VRF")
 
     def _on_add_ip(self) -> None:
         snapshot = self._require_snapshot()
@@ -2013,7 +2076,7 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "IP", str(e))
             return
-        self._mark_dirty()
+        self._mark_dirty(action="Добавлен IP")
         self.statusBar().showMessage(f"Добавлен IP {inventory_service.ip_label(ip)}")
 
     def _on_edit_ip(self, ip_id: UUID) -> None:
@@ -2047,7 +2110,7 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "IP", str(e))
             return
-        self._mark_dirty()
+        self._mark_dirty(action="Изменён IP")
 
     def _on_delete_ip(self, ip_id: UUID) -> None:
         snapshot = self._require_snapshot()
@@ -2057,7 +2120,7 @@ class MainWindow(QMainWindow):
         if answer != QMessageBox.StandardButton.Yes:
             return
         inventory_service.delete_ip(snapshot, ip_id)
-        self._mark_dirty()
+        self._mark_dirty(action="Удалён IP")
 
     def _on_add_lag(self) -> None:
         snapshot = self._require_snapshot()
@@ -2087,7 +2150,7 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "LAG", str(e))
             return
-        self._mark_dirty()
+        self._mark_dirty(action="Добавлен LAG")
         self.statusBar().showMessage(f"Добавлен LAG {lag.name}")
 
     def _on_edit_lag(self, lag_id: UUID) -> None:
@@ -2117,7 +2180,7 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "LAG", str(e))
             return
-        self._mark_dirty()
+        self._mark_dirty(action="Изменён LAG")
 
     def _on_delete_lag(self, lag_id: UUID) -> None:
         snapshot = self._require_snapshot()
@@ -2131,7 +2194,7 @@ class MainWindow(QMainWindow):
         if answer != QMessageBox.StandardButton.Yes:
             return
         inventory_service.delete_lag(snapshot, lag_id)
-        self._mark_dirty()
+        self._mark_dirty(action="Удалён LAG")
 
     def _on_add_port(self) -> None:
         snapshot = self._require_snapshot()
@@ -2152,7 +2215,7 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "Порт", str(e))
             return
-        self._mark_dirty()
+        self._mark_dirty(action="Добавлен порт")
         self.statusBar().showMessage(f"Добавлен порт {port.name}")
 
     def _on_delete_port(self, port_id: UUID) -> None:
@@ -2176,7 +2239,7 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "Порт", str(e))
             return
-        self._mark_dirty()
+        self._mark_dirty(action="Удалён порт")
         self.statusBar().showMessage(f"Порт удалён: {port.name}")
 
     def _on_edit_port_properties(self, port_id: UUID) -> None:
@@ -2196,7 +2259,7 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "Порт", str(e))
             return
-        self._mark_dirty()
+        self._mark_dirty(action="Изменены свойства порта")
         self.statusBar().showMessage(f"Порт обновлён: {name}")
 
     def _on_edit_vnic_host(self, port_id: UUID) -> None:
@@ -2219,7 +2282,7 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "vNIC", str(e))
             return
-        self._mark_dirty()
+        self._mark_dirty(action="Изменена привязка vNIC")
         self.statusBar().showMessage("Привязка vNIC обновлена")
 
     def _on_add_vswitch(self) -> None:
@@ -2246,7 +2309,7 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "vSwitch", str(e))
             return
-        self._mark_dirty()
+        self._mark_dirty(action="Добавлен vSwitch")
         self.statusBar().showMessage(f"Добавлен vSwitch {vs.name}")
 
     def _on_edit_vswitch(self, vswitch_id: UUID) -> None:
@@ -2267,7 +2330,7 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "vSwitch", str(e))
             return
-        self._mark_dirty()
+        self._mark_dirty(action="Изменён vSwitch")
         self.statusBar().showMessage(f"Обновлён vSwitch {name}")
 
     def _on_delete_vswitch(self, vswitch_id: UUID) -> None:
@@ -2285,7 +2348,7 @@ class MainWindow(QMainWindow):
         if reply != QMessageBox.StandardButton.Yes:
             return
         inventory_service.delete_virtual_switch(snapshot, vswitch_id)
-        self._mark_dirty()
+        self._mark_dirty(action="Удалён vSwitch")
         self.statusBar().showMessage(f"Удалён vSwitch {vs.name}")
 
     def _on_add_port_group(self) -> None:
@@ -2311,7 +2374,7 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "Port Group", str(e))
             return
-        self._mark_dirty()
+        self._mark_dirty(action="Добавлен Port Group")
         self.statusBar().showMessage(f"Добавлен Port Group {pg.name}")
 
     def _on_edit_port_group(self, port_group_id: UUID) -> None:
@@ -2337,7 +2400,7 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "Port Group", str(e))
             return
-        self._mark_dirty()
+        self._mark_dirty(action="Изменён Port Group")
         self.statusBar().showMessage(f"Обновлён Port Group {name}")
 
     def _on_delete_port_group(self, port_group_id: UUID) -> None:
@@ -2355,7 +2418,7 @@ class MainWindow(QMainWindow):
         if reply != QMessageBox.StandardButton.Yes:
             return
         inventory_service.delete_port_group(snapshot, port_group_id)
-        self._mark_dirty()
+        self._mark_dirty(action="Удалён Port Group")
         self.statusBar().showMessage(f"Удалён Port Group {pg.name}")
 
     def _on_edit_port_network(self, port_id: UUID) -> None:
@@ -2399,7 +2462,12 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "Сеть порта", str(e))
             return
-        self._mark_dirty()
+        self._mark_dirty(
+            action="Обновлена сеть порта",
+            detail=inventory_service.port_endpoint_label(snapshot, port_id),
+            entity_kind="port",
+            entity_id=port_id,
+        )
         self.statusBar().showMessage(
             f"Сеть обновлена: {inventory_service.port_endpoint_label(snapshot, port_id)}"
         )

@@ -11,6 +11,7 @@ from uuid import UUID
 from landesigner.domain.entities import (
     Building,
     Cable,
+    ChangeLogEntry,
     Device,
     DeviceType,
     Floor,
@@ -70,6 +71,7 @@ SECTION_ORDER = (
     "topology_links",
     "floor_plan_assets",
     "floor_plan_routes",
+    "change_log",
 )
 
 
@@ -153,6 +155,7 @@ def import_from_text(text: str) -> ProjectSnapshot:
     floor_plan_routes = [
         _load_floor_plan_route(r) for r in sections.get("floor_plan_routes", [])
     ]
+    change_log = [_load_change_log_entry(r) for r in sections.get("change_log", [])]
 
     return ProjectSnapshot(
         meta=meta,
@@ -175,6 +178,7 @@ def import_from_text(text: str) -> ProjectSnapshot:
         topology_links=topology_links,
         floor_plan_assets=floor_plan_assets,
         floor_plan_routes=floor_plan_routes,
+        change_log=change_log,
     )
 
 
@@ -327,6 +331,15 @@ def _headers_for(section: str) -> list[str]:
         ],
         "floor_plan_assets": ["id", "floor_id", "device_id", "x", "y", "rotation"],
         "floor_plan_routes": ["id", "floor_id", "cable_id", "points", "label"],
+        "change_log": [
+            "id",
+            "created_at",
+            "actor",
+            "action",
+            "detail",
+            "entity_kind",
+            "entity_id",
+        ],
     }
     return mapping[section]
 
@@ -588,6 +601,19 @@ def _section_rows(snapshot: ProjectSnapshot, name: str) -> list[dict[str, str]]:
                 "label": r.label,
             }
             for r in snapshot.floor_plan_routes
+        ]
+    if name == "change_log":
+        return [
+            {
+                "id": str(e.id),
+                "created_at": e.created_at.isoformat(),
+                "actor": e.actor,
+                "action": e.action,
+                "detail": e.detail,
+                "entity_kind": e.entity_kind,
+                "entity_id": _opt_uuid(e.entity_id),
+            }
+            for e in snapshot.change_log
         ]
     raise CsvFormatError(f"Неизвестная секция: {name}")
 
@@ -880,6 +906,18 @@ def _load_floor_plan_route(row: dict[str, str]) -> FloorPlanRoute:
         cable_id=_opt_parse_uuid(_get(row, "cable_id")),
         points=_parse_route_points(_get(row, "points")),
         label=_get(row, "label"),
+    )
+
+
+def _load_change_log_entry(row: dict[str, str]) -> ChangeLogEntry:
+    return ChangeLogEntry(
+        id=_req_uuid(row, "id"),
+        created_at=_parse_dt(_get(row, "created_at")) or utcnow(),
+        actor=_get(row, "actor"),
+        action=_get(row, "action"),
+        detail=_get(row, "detail"),
+        entity_kind=_get(row, "entity_kind"),
+        entity_id=_opt_parse_uuid(_get(row, "entity_id")),
     )
 
 

@@ -247,6 +247,19 @@ class FloorPlanRoute:
 
 
 @dataclass
+class ChangeLogEntry:
+    """Запись журнала изменений проекта (кто / что / когда)."""
+
+    id: UUID = field(default_factory=uuid4)
+    created_at: datetime = field(default_factory=utcnow)
+    actor: str = ""
+    action: str = ""
+    detail: str = ""
+    entity_kind: str = ""
+    entity_id: Optional[UUID] = None
+
+
+@dataclass
 class ProjectSnapshot:
     meta: ProjectMeta
     sites: list[Site] = field(default_factory=list)
@@ -268,4 +281,5 @@ class ProjectSnapshot:
     topology_links: list[TopologyLink] = field(default_factory=list)
     floor_plan_assets: list[FloorPlanAsset] = field(default_factory=list)
     floor_plan_routes: list[FloorPlanRoute] = field(default_factory=list)
+    change_log: list[ChangeLogEntry] = field(default_factory=list)
 

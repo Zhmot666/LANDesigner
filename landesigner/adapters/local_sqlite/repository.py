@@ -9,6 +9,7 @@ from uuid import UUID
 from landesigner.domain.entities import (
     Building,
     Cable,
+    ChangeLogEntry,
     Device,
     DeviceType,
     Floor,
@@ -424,6 +425,20 @@ class LocalSqliteRepository(ProjectRepository):
             """
         )
 
+        con.execute(
+            """
+            CREATE TABLE IF NOT EXISTS change_log (
+                id TEXT PRIMARY KEY NOT NULL,
+                created_at TEXT NOT NULL,
+                actor TEXT NOT NULL DEFAULT '',
+                action TEXT NOT NULL DEFAULT '',
+                detail TEXT NOT NULL DEFAULT '',
+                entity_kind TEXT NOT NULL DEFAULT '',
+                entity_id TEXT
+            )
+            """
+        )
+
         self._ensure_column(con, "port", "access_vlan_id", "TEXT")
         self._ensure_column(con, "port", "mode", "TEXT NOT NULL DEFAULT 'ACCESS'")
         self._ensure_column(con, "port", "mac", "TEXT NOT NULL DEFAULT ''")
@@ -466,6 +481,7 @@ class LocalSqliteRepository(ProjectRepository):
 
             # Один файл = один проект.
             con.execute("PRAGMA foreign_keys = ON")
+            con.execute("DELETE FROM change_log")
             con.execute("DELETE FROM floor_plan_asset")
             con.execute("DELETE FROM floor_plan_route")
             con.execute("DELETE FROM topology_link")
@@ -1061,6 +1077,30 @@ class LocalSqliteRepository(ProjectRepository):
             except sqlite3.OperationalError:
                 floor_plan_routes = []
 
+            change_log: list[ChangeLogEntry] = []
+            try:
+                log_rows = con.execute(
+                    """
+                    SELECT id, created_at, actor, action, detail, entity_kind, entity_id
+                    FROM change_log
+                    ORDER BY created_at ASC
+                    """
+                ).fetchall()
+                change_log = [
+                    ChangeLogEntry(
+                        id=UUID(r[0]),
+                        created_at=_dt_from_str(r[1]),
+                        actor=r[2] or "",
+                        action=r[3] or "",
+                        detail=r[4] or "",
+                        entity_kind=r[5] or "",
+                        entity_id=UUID(r[6]) if r[6] else None,
+                    )
+                    for r in log_rows
+                ]
+            except sqlite3.OperationalError:
+                change_log = []
+
             return ProjectSnapshot(
                 meta=meta,
                 sites=sites,
@@ -1082,6 +1122,7 @@ class LocalSqliteRepository(ProjectRepository):
                 topology_links=topology_links,
                 floor_plan_assets=floor_plan_assets,
                 floor_plan_routes=floor_plan_routes,
+                change_log=change_log,
             )
 
     def save_project(self, file_path: str, snapshot: ProjectSnapshot) -> None:
@@ -1097,6 +1138,7 @@ class LocalSqliteRepository(ProjectRepository):
             # Иначе после «Новый» + сохранение поверх старого файла в БД остаются
             # старые project_meta, а load_project(LIMIT 1) может открыть не тот проект.
             con.execute("PRAGMA foreign_keys = ON")
+            con.execute("DELETE FROM change_log")
             con.execute("DELETE FROM floor_plan_asset")
             con.execute("DELETE FROM floor_plan_route")
             con.execute("DELETE FROM topology_link")
@@ -1490,6 +1532,25 @@ class LocalSqliteRepository(ProjectRepository):
                             separators=(",", ":"),
                         ),
                         route.label,
+                    ),
+                )
+
+            for entry in snapshot.change_log:
+                con.execute(
+                    """
+                    INSERT INTO change_log(
+                        id, created_at, actor, action, detail, entity_kind, entity_id
+                    )
+                    VALUES(?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        _uuid_str(entry.id),
+                        _dt_to_str(entry.created_at),
+                        entry.actor or "",
+                        entry.action or "",
+                        entry.detail or "",
+                        entry.entity_kind or "",
+                        _uuid_str(entry.entity_id) if entry.entity_id is not None else None,
                     ),
                 )
 
