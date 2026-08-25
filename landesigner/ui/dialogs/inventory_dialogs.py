@@ -50,10 +50,13 @@ from landesigner.ui.labels import (
 def _russian_buttons(buttons: QDialogButtonBox) -> None:
     ok = buttons.button(QDialogButtonBox.StandardButton.Ok)
     cancel = buttons.button(QDialogButtonBox.StandardButton.Cancel)
+    close = buttons.button(QDialogButtonBox.StandardButton.Close)
     if ok is not None:
         ok.setText("ОК")
     if cancel is not None:
         cancel.setText("Отмена")
+    if close is not None:
+        close.setText("Закрыть")
 
 
 class NameDialog(QDialog):

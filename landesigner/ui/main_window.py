@@ -29,6 +29,7 @@ from landesigner.services import inventory as inventory_service
 from landesigner.services import snapshots as snap_svc
 from landesigner.services import sync as sync_svc
 from landesigner.services.project import ProjectService
+from landesigner.ui.dialogs.about_dialogs import AboutDialog, ChangelogDialog
 from landesigner.ui.dialogs.catalog_dialog import DeviceTypeCatalogDialog
 from landesigner.ui.dialogs.inventory_dialogs import (
     BuildingDialog,
@@ -192,6 +193,14 @@ class MainWindow(QMainWindow):
         action_catalog = QAction("Тип из каталога…", self)
         tools_menu.addAction(action_catalog)
         action_catalog.triggered.connect(self._on_add_device_type_from_catalog)
+
+        help_menu = menu.addMenu("Справка")
+        action_changelog = QAction("История изменений…", self)
+        action_about = QAction("О программе…", self)
+        help_menu.addAction(action_changelog)
+        help_menu.addAction(action_about)
+        action_changelog.triggered.connect(self._on_show_changelog)
+        action_about.triggered.connect(self._on_show_about)
 
         central = QWidget(self)
         layout = QHBoxLayout(central)
@@ -437,6 +446,12 @@ class MainWindow(QMainWindow):
             self._device_card.show_device(device_id)
         else:
             self._device_card.show_project()
+
+    def _on_show_changelog(self) -> None:
+        ChangelogDialog(self).exec()
+
+    def _on_show_about(self) -> None:
+        AboutDialog(self).exec()
 
     def _on_edit_project(self) -> None:
         snapshot = self._require_snapshot()
