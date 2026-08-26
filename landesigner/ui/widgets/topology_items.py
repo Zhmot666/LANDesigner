@@ -235,19 +235,24 @@ class CableLinkItem(QGraphicsLineItem):
         node_b: DeviceNodeItem,
         label: str = "",
         tooltip: str = "",
+        *,
+        cable_ids: list[UUID] | None = None,
     ) -> None:
         super().__init__()
         self.link_id = link_id
-        self.cable_id = cable_id
+        self.cable_ids: list[UUID] = list(cable_ids or [])
+        if cable_id is not None and cable_id not in self.cable_ids:
+            self.cable_ids.insert(0, cable_id)
+        self.cable_id = self.cable_ids[0] if self.cable_ids else cable_id
         self.node_a = node_a
         self.node_b = node_b
         self.setZValue(1)
         self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, True)
         self.setPen(QPen(QColor("#7a8b96"), 2.0))
         self._label = QGraphicsTextItem(label, self)
-        self._label.setDefaultTextColor(QColor("#667784"))
-        self._label.setFont(QFont("Segoe UI", 8))
-        tip = tooltip.strip() or label
+        self._label.setDefaultTextColor(QColor("#2f7c85"))
+        self._label.setFont(QFont("Segoe UI", 9, QFont.Weight.DemiBold))
+        tip = tooltip.strip()
         if tip:
             self.setToolTip(tip)
             self._label.setToolTip(tip)
@@ -258,9 +263,16 @@ class CableLinkItem(QGraphicsLineItem):
             dot.setPen(QPen(Qt.PenStyle.NoPen))
         self.update_geometry()
 
+    @property
+    def cable_count(self) -> int:
+        return len(self.cable_ids)
+
+    def contains_cable(self, cable_id: UUID | None) -> bool:
+        return cable_id is not None and cable_id in self.cable_ids
+
     def set_label(self, label: str, tooltip: str = "") -> None:
         self._label.setPlainText(label)
-        tip = tooltip.strip() or label
+        tip = tooltip.strip()
         self.setToolTip(tip)
         self._label.setToolTip(tip)
         self.update_geometry()
@@ -275,7 +287,7 @@ class CableLinkItem(QGraphicsLineItem):
         path.moveTo(self.line().p1())
         path.lineTo(self.line().p2())
         stroker = QPainterPathStroker()
-        stroker.setWidth(12.0)
+        stroker.setWidth(14.0)
         stroker.setCapStyle(Qt.PenCapStyle.RoundCap)
         return stroker.createStroke(path)
 
@@ -288,18 +300,20 @@ class CableLinkItem(QGraphicsLineItem):
         self._dot_b.setPos(b)
         mid = QPointF((a.x() + b.x()) / 2, (a.y() + b.y()) / 2)
         br = self._label.boundingRect()
-        # Сместить подпись перпендикулярно линии, чтобы не лежала на штрихе
         dx = b.x() - a.x()
         dy = b.y() - a.y()
         length = (dx * dx + dy * dy) ** 0.5 or 1.0
         nx, ny = -dy / length, dx / length
-        offset = 10.0
+        offset = 12.0
         self._label.setPos(
             mid.x() - br.width() / 2 + nx * offset,
             mid.y() - br.height() / 2 + ny * offset,
         )
         selected = self.isSelected()
-        self.setPen(QPen(QColor("#2f7c85" if selected else "#7a8b96"), 2.8 if selected else 2.0))
+        count = self.cable_count
+        base = 2.0 + min(4.0, max(0, count - 1) * 0.35)
+        width = base + (0.8 if selected else 0.0)
+        self.setPen(QPen(QColor("#2f7c85" if selected else "#7a8b96"), width))
 
     def paint(
         self,
@@ -307,7 +321,9 @@ class CableLinkItem(QGraphicsLineItem):
         option: QStyleOptionGraphicsItem,
         widget: QWidget | None = None,
     ) -> None:
-        color = QColor("#2f7c85") if self.isSelected() else QColor("#7a8b96")
-        width = 3.0 if self.isSelected() else 2.0
+        selected = self.isSelected()
+        count = self.cable_count
+        color = QColor("#2f7c85") if selected else QColor("#7a8b96")
+        width = 2.0 + min(4.0, max(0, count - 1) * 0.35) + (0.8 if selected else 0.0)
         painter.setPen(QPen(color, width))
         painter.drawLine(self.line())

@@ -383,30 +383,46 @@ class TopologyView(QWidget):
     def _delete_selected_link(self) -> None:
         if self._snapshot is None:
             return
-        cable_id = None
+        cable_ids: list[UUID] = []
         for item in self._scene.selectedItems():
-            if isinstance(item, CableLinkItem) and item.cable_id is not None:
-                cable_id = item.cable_id
+            if isinstance(item, CableLinkItem) and item.cable_ids:
+                cable_ids = list(item.cable_ids)
                 break
-        if cable_id is None:
+        if not cable_ids:
             return
+        if len(cable_ids) == 1:
+            msg = "Удалить кабель и освободить порты?"
+        else:
+            msg = (
+                f"Между устройствами {len(cable_ids)} кабелей.\n"
+                "Удалить все и освободить порты?"
+            )
         answer = QMessageBox.question(
             self,
             "Удалить связь",
-            "Удалить кабель и освободить порты?",
+            msg,
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
         if answer != QMessageBox.StandardButton.Yes:
             return
-        cmd = DeleteCableCommand(
-            self._snapshot,
-            cable_id,
-            on_changed=self._on_cable_command_changed,
+        title = (
+            "Удаление связи"
+            if len(cable_ids) == 1
+            else f"Удаление {len(cable_ids)} связей"
         )
-        if cmd.isObsolete():
-            return
-        self._undo.push(cmd)
+        self._undo.beginMacro(title)
+        try:
+            for cable_id in cable_ids:
+                cmd = DeleteCableCommand(
+                    self._snapshot,
+                    cable_id,
+                    on_changed=self._on_cable_command_changed,
+                )
+                if not cmd.isObsolete():
+                    self._undo.push(cmd)
+        finally:
+            self._undo.endMacro()
         self.topology_changed.emit()
 
     def _on_cable_command_changed(self) -> None:
@@ -479,21 +495,33 @@ class TopologyView(QWidget):
                 self._scene.addItem(item)
                 self._nodes[node.id] = item
 
+            bundles: dict[frozenset[UUID], list] = {}
             for link in snapshot.topology_links:
                 a = self._nodes.get(link.topology_node_a_id)
                 b = self._nodes.get(link.topology_node_b_id)
                 if a is None or b is None:
                     continue
-                label = ""
-                tip = ""
-                if link.cable_id is not None:
-                    label = topo_service.link_caption(snapshot, link.cable_id)
-                    tip = topo_service.link_tooltip(snapshot, link.cable_id)
+                key = frozenset({link.topology_node_a_id, link.topology_node_b_id})
+                bundles.setdefault(key, []).append(link)
+
+            for links in bundles.values():
+                first = links[0]
+                a = self._nodes[first.topology_node_a_id]
+                b = self._nodes[first.topology_node_b_id]
+                cable_ids = [lnk.cable_id for lnk in links if lnk.cable_id is not None]
+                label = topo_service.bundle_caption(len(cable_ids))
+                tip = topo_service.bundle_tooltip(snapshot, cable_ids)
                 item = CableLinkItem(
-                    link.id, link.cable_id, a, b, label=label, tooltip=tip
+                    first.id,
+                    cable_ids[0] if cable_ids else None,
+                    a,
+                    b,
+                    label=label,
+                    tooltip=tip,
+                    cable_ids=cable_ids,
                 )
                 self._scene.addItem(item)
-                self._links[link.id] = item
+                self._links[first.id] = item
 
             self._set_nodes_movable(not self._connect_mode)
 
@@ -503,7 +531,7 @@ class TopologyView(QWidget):
                 self._suppress_selection = True
                 try:
                     for link_item in self._links.values():
-                        if link_item.cable_id == selected_cable:
+                        if link_item.contains_cable(selected_cable):
                             link_item.setSelected(True)
                             break
                 finally:

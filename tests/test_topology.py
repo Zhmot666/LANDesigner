@@ -94,32 +94,32 @@ def test_restore_cable_round_trip():
     assert next(p for p in snap.ports if p.id == port_b).status.value == "OCCUPIED"
 
 
-def test_link_caption_includes_ports_and_label():
+def test_link_caption_empty_details_in_tooltip():
     snap = _snap_with_devices()
     cable = snap.cables[0]
-    # Явная короткая метка без назначения — на схеме видна метка + порты
     cable.purpose = ""
     cable.label = "L1"
-    caption = topo.link_caption(snap, cable.id)
-    assert "L1" in caption
-    assert "↔" in caption
-    port_a = next(p for p in snap.ports if p.id == cable.end_a_port_id)
-    assert port_a.name in caption
-    assert caption.count("↔") == 1
-
-
-def test_link_caption_shortens_auto_label():
-    snap = _snap_with_devices()
-    cable = snap.cables[0]
-    cable.label = "CAB-0001 · WAN: fg-edge / wan1 ↔ ISP-CPE / eth0"
-    cable.purpose = "WAN"
-    caption = topo.link_caption(snap, cable.id)
-    assert "CAB-0001" not in caption
-    assert "WAN" in caption
-    assert "fg-edge" not in caption
+    assert topo.link_caption(snap, cable.id) == ""
     tip = topo.link_tooltip(snap, cable.id)
-    assert "CAB-0001" in tip
-    assert "fg-edge" in tip or "sw-a" in tip
+    assert "L1" in tip
+    port_a = next(p for p in snap.ports if p.id == cable.end_a_port_id)
+    assert port_a.name in tip
+
+
+def test_bundle_caption_and_tooltip_lists_all_cables():
+    snap = _snap_with_devices()
+    a = next(d for d in snap.devices if d.hostname == "sw-a")
+    b = next(d for d in snap.devices if d.hostname == "sw-b")
+    pa = inv.ports_for_device(snap, a.id)[1]
+    pb = inv.ports_for_device(snap, b.id)[1]
+    c2 = inv.add_cable(snap, pa.id, pb.id, label="L2", kind=CableKind.COPPER)
+    ids = [snap.cables[0].id, c2.id]
+    assert topo.bundle_caption(1) == ""
+    assert topo.bundle_caption(2) == "×2"
+    tip = topo.bundle_tooltip(snap, ids)
+    assert "Кабелей между устройствами: 2" in tip
+    assert "L2" in tip
+    assert tip.count("——") >= 2
 
 
 def test_link_caption_includes_vlan_and_speed():
@@ -136,9 +136,9 @@ def test_link_caption_includes_vlan_and_speed():
     inv.set_port_network(
         snap, port_b.id, mode=PortMode.ACCESS, access_vlan_id=vlan.id, tagged_vlan_ids=[]
     )
-    caption = topo.link_caption(snap, cable.id)
-    assert "V20" in caption
-    assert "1G" in caption or "1000" in caption
+    tip = topo.link_tooltip(snap, cable.id)
+    assert "V20" in tip
+    assert "1G" in tip or "1000" in tip
 
 
 def test_snap_and_auto_layout():
