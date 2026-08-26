@@ -8,16 +8,23 @@ from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QFormLayout,
     QLabel,
+    QListWidget,
+    QListWidgetItem,
     QStackedWidget,
     QVBoxLayout,
     QWidget,
 )
 
-from landesigner.domain.entities import Building, Device, ProjectSnapshot, Rack
+from landesigner.domain.entities import Building, Cable, Device, ProjectSnapshot, Rack
 from landesigner.domain.enums import PortStatus, PortMedia, DeviceRole
 from landesigner.services import inventory as inv
 from landesigner.ui.icons import icon_action_button
-from landesigner.ui.labels import lag_mode_label, role_label
+from landesigner.ui.labels import (
+    cable_category_label,
+    cable_kind_label,
+    lag_mode_label,
+    role_label,
+)
 from landesigner.ui.widgets.panel_card import PanelCard
 
 
@@ -27,14 +34,16 @@ class ContextKind(str, Enum):
     BUILDING = "building"
     RACK = "rack"
     DEVICE = "device"
+    CABLE = "cable"
 
 
 class ContextCard(QWidget):
-    """Контекстная карточка: проект / здание / устройство."""
+    """Контекстная карточка: проект / здание / устройство / кабель."""
 
     edit_project_requested = Signal()
     edit_building_requested = Signal(object)  # UUID
     edit_device_requested = Signal(object)  # UUID
+    edit_cable_requested = Signal(object)  # UUID
     show_on_topology_requested = Signal(object)  # UUID
     show_on_floor_plan_requested = Signal(object)  # UUID
     show_on_rack_requested = Signal(object)  # UUID
@@ -48,6 +57,8 @@ class ContextCard(QWidget):
         self._building_id: UUID | None = None
         self._rack_id: UUID | None = None
         self._device_id: UUID | None = None
+        self._cable_ids: list[UUID] = []
+        self._cable_id: UUID | None = None
         self._project_file: str | None = None
 
         root = QVBoxLayout(self)
@@ -74,11 +85,13 @@ class ContextCard(QWidget):
         self._page_building = self._build_building_page()
         self._page_rack = self._build_rack_page()
         self._page_device = self._build_device_page()
+        self._page_cable = self._build_cable_page()
         self._stack.addWidget(self._page_empty)
         self._stack.addWidget(self._page_project)
         self._stack.addWidget(self._page_building)
         self._stack.addWidget(self._page_rack)
         self._stack.addWidget(self._page_device)
+        self._stack.addWidget(self._page_cable)
         self._card.set_body_widget(self._stack)
         root.addWidget(self._card)
 
@@ -263,6 +276,55 @@ class ContextCard(QWidget):
         layout.addStretch(1)
         return page
 
+    def _build_cable_page(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
+        self._cab_title = self._title_label(page)
+        layout.addWidget(self._cab_title)
+        self._cab_list = QListWidget(page)
+        self._cab_list.setMaximumHeight(140)
+        self._cab_list.currentItemChanged.connect(self._on_cable_list_changed)
+        layout.addWidget(self._cab_list)
+        form = QFormLayout()
+        form.setSpacing(4)
+        form.setContentsMargins(0, 0, 0, 0)
+        self._cab_label = QLabel("—", page)
+        self._cab_purpose = QLabel("—", page)
+        self._cab_kind = QLabel("—", page)
+        self._cab_category = QLabel("—", page)
+        self._cab_color = QLabel("—", page)
+        self._cab_length = QLabel("—", page)
+        self._cab_end_a = QLabel("—", page)
+        self._cab_end_b = QLabel("—", page)
+        self._cab_path = QLabel("—", page)
+        for label in (
+            self._cab_label,
+            self._cab_purpose,
+            self._cab_kind,
+            self._cab_category,
+            self._cab_color,
+            self._cab_length,
+            self._cab_end_a,
+            self._cab_end_b,
+            self._cab_path,
+        ):
+            label.setWordWrap(True)
+            label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        form.addRow("Метка", self._cab_label)
+        form.addRow("Назначение", self._cab_purpose)
+        form.addRow("Вид", self._cab_kind)
+        form.addRow("Категория", self._cab_category)
+        form.addRow("Цвет", self._cab_color)
+        form.addRow("Длина", self._cab_length)
+        form.addRow("Конец A", self._cab_end_a)
+        form.addRow("Конец B", self._cab_end_b)
+        form.addRow("Путь", self._cab_path)
+        layout.addLayout(form)
+        layout.addStretch(1)
+        return page
+
     def set_project_file(self, path: str | None) -> None:
         self._project_file = path
         if self._kind == ContextKind.PROJECT and self._snapshot is not None:
@@ -276,6 +338,13 @@ class ContextCard(QWidget):
         if self._kind == ContextKind.DEVICE and self._device_id is not None:
             if any(d.id == self._device_id for d in snapshot.devices):
                 self.show_device(self._device_id)
+                return
+        if self._kind == ContextKind.CABLE and self._cable_ids:
+            alive = [
+                cid for cid in self._cable_ids if any(c.id == cid for c in snapshot.cables)
+            ]
+            if alive:
+                self.show_cables(alive)
                 return
         if self._kind == ContextKind.RACK and self._rack_id is not None:
             if any(r.id == self._rack_id for r in snapshot.racks):
@@ -292,6 +361,8 @@ class ContextCard(QWidget):
         self._building_id = None
         self._rack_id = None
         self._device_id = None
+        self._cable_ids = []
+        self._cable_id = None
         self._card.set_subtitle("Нет открытого проекта")
         self._stack.setCurrentWidget(self._page_empty)
         self._set_nav_visible(False)
@@ -305,6 +376,8 @@ class ContextCard(QWidget):
         self._building_id = None
         self._rack_id = None
         self._device_id = None
+        self._cable_ids = []
+        self._cable_id = None
         self._fill_project()
         self._stack.setCurrentWidget(self._page_project)
         self._set_nav_visible(False)
@@ -322,6 +395,8 @@ class ContextCard(QWidget):
         self._building_id = building_id
         self._rack_id = None
         self._device_id = None
+        self._cable_ids = []
+        self._cable_id = None
         self._fill_building(building)
         self._stack.setCurrentWidget(self._page_building)
         self._set_nav_visible(False)
@@ -339,6 +414,8 @@ class ContextCard(QWidget):
         self._rack_id = rack_id
         self._building_id = None
         self._device_id = None
+        self._cable_ids = []
+        self._cable_id = None
         self._fill_rack(rack)
         self._stack.setCurrentWidget(self._page_rack)
         self._set_nav_visible(False)
@@ -356,9 +433,37 @@ class ContextCard(QWidget):
         self._device_id = device_id
         self._building_id = None
         self._rack_id = None
+        self._cable_ids = []
+        self._cable_id = None
         self._fill_device(device)
         self._stack.setCurrentWidget(self._page_device)
         self._set_nav_visible(True)
+        self._btn_edit.setEnabled(True)
+
+    def show_cables(self, cable_ids: list[UUID] | UUID | None) -> None:
+        if self._snapshot is None:
+            self.show_project()
+            return
+        if isinstance(cable_ids, UUID):
+            ids = [cable_ids]
+        elif cable_ids:
+            ids = list(cable_ids)
+        else:
+            self.show_project()
+            return
+        alive = [cid for cid in ids if any(c.id == cid for c in self._snapshot.cables)]
+        if not alive:
+            self.show_project()
+            return
+        self._kind = ContextKind.CABLE
+        self._cable_ids = alive
+        self._cable_id = alive[0]
+        self._device_id = None
+        self._building_id = None
+        self._rack_id = None
+        self._fill_cables()
+        self._stack.setCurrentWidget(self._page_cable)
+        self._set_nav_visible(False)
         self._btn_edit.setEnabled(True)
 
     def current_device_id(self) -> UUID | None:
@@ -516,6 +621,100 @@ class ContextCard(QWidget):
                     )
         self._update_rack_nav()
 
+    def _cable_list_label(self, cable: Cable) -> str:
+        assert self._snapshot is not None
+        ends = (
+            f"{inv.port_endpoint_label(self._snapshot, cable.end_a_port_id)} ↔ "
+            f"{inv.port_endpoint_label(self._snapshot, cable.end_b_port_id)}"
+        )
+        if cable.label.strip():
+            return f"{cable.label.strip()} · {ends}"
+        if cable.purpose.strip():
+            return f"{cable.purpose.strip()} · {ends}"
+        return ends
+
+    def _fill_cables(self) -> None:
+        assert self._snapshot is not None
+        snap = self._snapshot
+        n = len(self._cable_ids)
+        if n > 1:
+            self._card.set_subtitle(f"Связь · {n} кабелей")
+            self._cab_title.setText(f"×{n} между устройствами")
+            self._cab_list.setVisible(True)
+        else:
+            self._card.set_subtitle("Кабель")
+            self._cab_title.setText("Кабель")
+            self._cab_list.setVisible(False)
+
+        self._cab_list.blockSignals(True)
+        self._cab_list.clear()
+        preferred = self._cable_id
+        select_row = 0
+        for index, cable_id in enumerate(self._cable_ids):
+            cable = next((c for c in snap.cables if c.id == cable_id), None)
+            if cable is None:
+                continue
+            item = QListWidgetItem(self._cable_list_label(cable))
+            item.setData(Qt.ItemDataRole.UserRole, str(cable.id))
+            self._cab_list.addItem(item)
+            if preferred is not None and cable.id == preferred:
+                select_row = self._cab_list.count() - 1
+        if self._cab_list.count():
+            self._cab_list.setCurrentRow(select_row)
+            raw = self._cab_list.item(select_row).data(Qt.ItemDataRole.UserRole)
+            self._cable_id = UUID(str(raw)) if raw else self._cable_ids[0]
+        self._cab_list.blockSignals(False)
+        self._fill_cable_details()
+
+    def _fill_cable_details(self) -> None:
+        assert self._snapshot is not None
+        cable = next((c for c in self._snapshot.cables if c.id == self._cable_id), None)
+        if cable is None:
+            for label in (
+                self._cab_label,
+                self._cab_purpose,
+                self._cab_kind,
+                self._cab_category,
+                self._cab_color,
+                self._cab_length,
+                self._cab_end_a,
+                self._cab_end_b,
+                self._cab_path,
+            ):
+                label.setText("—")
+            self._btn_edit.setEnabled(False)
+            return
+        if len(self._cable_ids) == 1:
+            self._cab_title.setText(cable.label.strip() or cable.purpose.strip() or "Кабель")
+        self._cab_label.setText(cable.label.strip() or "—")
+        self._cab_purpose.setText(cable.purpose.strip() or "—")
+        self._cab_kind.setText(cable_kind_label(cable.kind))
+        self._cab_category.setText(cable_category_label(cable.category))
+        self._cab_color.setText(cable.color.strip() or "—")
+        if cable.length_m is not None:
+            self._cab_length.setText(f"{cable.length_m:g} м")
+        else:
+            self._cab_length.setText("—")
+        self._cab_end_a.setText(
+            inv.port_endpoint_label(self._snapshot, cable.end_a_port_id)
+        )
+        self._cab_end_b.setText(
+            inv.port_endpoint_label(self._snapshot, cable.end_b_port_id)
+        )
+        self._cab_path.setText(inv.cable_path_label(self._snapshot, cable))
+        self._btn_edit.setEnabled(True)
+
+    def _on_cable_list_changed(
+        self, current: QListWidgetItem | None, _previous: QListWidgetItem | None
+    ) -> None:
+        if current is None or self._kind != ContextKind.CABLE:
+            return
+        raw = current.data(Qt.ItemDataRole.UserRole)
+        if raw is None:
+            return
+        self._cable_id = UUID(str(raw))
+        self._fill_cable_details()
+
     def _set_nav_visible(self, visible: bool) -> None:
         self._btn_topo.setVisible(visible)
         self._btn_plan.setVisible(visible)
@@ -538,6 +737,11 @@ class ContextCard(QWidget):
             self.edit_building_requested.emit(self._building_id)
         elif self._kind == ContextKind.DEVICE and self._device_id is not None:
             self.edit_device_requested.emit(self._device_id)
+        elif self._kind == ContextKind.CABLE and self._cable_id is not None:
+            self.edit_cable_requested.emit(self._cable_id)
+        elif self._kind == ContextKind.RACK and self._rack_id is not None:
+            # Редактирование шкафа — через дерево; кнопки «Изменить» для rack пока нет
+            pass
 
     def _emit_topo(self) -> None:
         if self._device_id is not None:

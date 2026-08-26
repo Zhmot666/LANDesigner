@@ -425,6 +425,7 @@ class MainWindow(QMainWindow):
         self._inventory_view.delete_port_requested.connect(self._on_delete_port)
         self._topology_view.topology_changed.connect(self._on_topology_changed)
         self._topology_view.device_selected.connect(self._on_topology_device_selected)
+        self._topology_view.cable_selected.connect(self._on_topology_cable_selected)
         self._topology_view.connect_devices_requested.connect(self._on_topology_connect_devices)
         self._topology_view.edit_device_requested.connect(self._on_edit_device)
         self._inventory_view.device_selection_changed.connect(self._on_inventory_device_selected)
@@ -437,6 +438,7 @@ class MainWindow(QMainWindow):
         self._device_card.edit_project_requested.connect(self._on_edit_project)
         self._device_card.edit_building_requested.connect(self._on_edit_building_from_card)
         self._device_card.edit_device_requested.connect(self._on_edit_device)
+        self._device_card.edit_cable_requested.connect(self._on_edit_cable)
         self._device_card.show_on_topology_requested.connect(self._on_show_on_topology)
         self._device_card.show_on_floor_plan_requested.connect(self._on_show_on_floor_plan)
         self._device_card.show_on_rack_requested.connect(self._on_show_on_rack)
@@ -774,9 +776,25 @@ class MainWindow(QMainWindow):
                 self._inventory_view.select_device(device_id)
                 self._floor_plan_view.select_device(device_id)
                 self._rack_view.select_device(device_id)
-            self._show_device_card(device_id)
+                self._show_device_card(device_id)
+            elif device_id is None:
+                # Снятие выделения или клик по кабелю — карточку кабеля
+                # обработает _on_topology_cable_selected.
+                pass
         finally:
             self._syncing_selection = False
+
+    def _on_topology_cable_selected(self, cable_ids: object) -> None:
+        if self._syncing_selection:
+            return
+        if isinstance(cable_ids, list) and cable_ids:
+            self._device_card.show_cables(cable_ids)
+            return
+        if isinstance(cable_ids, UUID):
+            self._device_card.show_cables([cable_ids])
+            return
+        if not self._topology_view.has_selection():
+            self._device_card.show_project()
 
     def _on_rack_device_selected(self, device_id: object) -> None:
         if self._syncing_selection:

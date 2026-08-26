@@ -114,7 +114,7 @@ class TopologyView(QWidget):
     """Редактор топологии: узлы = устройства, линки = кабели."""
 
     device_selected = Signal(object)  # UUID | None
-    cable_selected = Signal(object)  # UUID | None
+    cable_selected = Signal(object)  # list[UUID] | None
     topology_changed = Signal()
     connect_devices_requested = Signal(object, object)  # device_a, device_b
     edit_device_requested = Signal(object)  # UUID
@@ -588,17 +588,21 @@ class TopologyView(QWidget):
         for link in self._links.values():
             link.update_geometry()
 
+    def has_selection(self) -> bool:
+        return bool(self._scene.selectedItems())
+
     def _on_selection_changed(self) -> None:
         if self._suppress_selection or self._rebuild_guard:
             return
         device_id = None
-        cable_id = None
+        cable_ids = None
         for item in self._scene.selectedItems():
             if isinstance(item, DeviceNodeItem):
                 device_id = item.device_id
                 break
-            if isinstance(item, CableLinkItem) and item.cable_id is not None:
-                cable_id = item.cable_id
-        self._btn_delete.setEnabled(cable_id is not None)
+            if isinstance(item, CableLinkItem) and item.cable_ids:
+                cable_ids = list(item.cable_ids)
+                break
+        self._btn_delete.setEnabled(bool(cable_ids))
         self.device_selected.emit(device_id)
-        self.cable_selected.emit(cable_id)
+        self.cable_selected.emit(cable_ids)
